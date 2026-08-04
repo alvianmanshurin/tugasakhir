@@ -64,7 +64,7 @@ def create_directories():
     dirs = [
         "data/raw", "data/annotated/images/train", "data/annotated/images/val",
         "data/annotated/labels/train", "data/annotated/labels/val",
-        "models", "outputs/detections", "outputs/evaluation",
+        "models", "outputs/detections", "outputs/evaluation", "docs",
     ]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
@@ -108,17 +108,65 @@ def main():
     print("\n" + "=" * 60)
     print("SETUP COMPLETE!")
     print("=" * 60)
-    print("\nQuick commands:")
-    print("  python src/train.py --quick          # Training cepat (10 epochs)")
-    print("  python src/train.py                  # Training penuh (50 epochs)")
-    print("  python src/detect.py --source foto.jpg  # Deteksi 1 gambar")
-    print("  python src/detect.py --source data/raw  # Batch deteksi")
-    print("  python src/realtime.py --source 0 --show  # Webcam")
-    print("\nTips untuk laptop ini:")
-    print("  - Gunakan YOLOv8n (sudah di-set default)")
-    print("  - Image size 416 (bukan 640)")
-    print("  - Batch size 4 (hemat RAM)")
-    print("  - Training ~25-30 menit untuk 50 epochs")
+
+    print("\n" + "-" * 60)
+    print("ALL AVAILABLE COMMANDS")
+    print("-" * 60)
+
+    print("\n[TRAINING]")
+    print("  python src/train.py --quick              # Quick training (10 epochs)")
+    print("  python src/train.py                      # Full training (50 epochs)")
+    print("  python src/train.py --check              # Check system resources")
+    print("  python src/monitor.py --action watch     # Monitor training progress")
+
+    print("\n[DETECTION]")
+    print("  python src/detect.py --source image.jpg  # Detect single image")
+    print("  python src/detect.py --source data/raw   # Batch detection")
+    print("  python src/realtime.py --source 0 --show # Webcam real-time")
+
+    print("\n[EVALUATION]")
+    print("  python src/evaluate.py                   # Full evaluation")
+    print("  python src/evaluate.py --task fps        # FPS benchmark only")
+    print("  python src/comparison.py --action compare --image-dir data/raw --manual-json manual_counts.json")
+
+    print("\n[DATASET - VIDEO]")
+    print("  python src/extract_frames.py --action list              # List videos")
+    print("  python src/extract_frames.py --action extract-all      # Extract all videos")
+    print("  python src/extract_frames.py --action extract --video path/to/video.MOV")
+    print("  python src/extract_frames.py --action split            # Split to train/val")
+
+    print("\n[DATASET]")
+    print("  python src/dataset_prepare.py --action validate  # Validate dataset")
+    print("  python src/dataset_prepare.py --action split --source data/raw")
+    print("  python src/dataset_collect.py --action guide     # Collection guide")
+    print("  python src/dataset_collect.py --action webcam    # Capture from webcam")
+
+    print("\n[ANNOTATION]")
+    print("  python setup_labelimg.py --action install  # Install LabelImg")
+    print("  python setup_labelimg.py --action launch   # Launch LabelImg")
+    print("  python setup_labelimg.py --action guide    # Annotation guide")
+
+    print("\n[GUI]")
+    print("  python src/gui_app.py                    # Launch GUI application")
+
+    print("\n[PIPELINE]")
+    print("  python src/pipeline.py --action status      # Check project status")
+    print("  python src/pipeline.py --action full        # Run full pipeline")
+    print("  python src/pipeline.py --action from-train  # Train after annotation")
+
+    print("\n[EXPORT]")
+    print("  python src/export_model.py --action export --format onnx tflite")
+
+    print("\n" + "-" * 60)
+    print("TIPS FOR THIS LAPTOP")
+    print("-" * 60)
+    print("  1. Use YOLOv8n (default, fastest)")
+    print("  2. Image size 416 (not 640)")
+    print("  3. Batch size 4 (saves RAM)")
+    print("  4. Close other apps during training")
+    print("  5. Use --quick for testing")
+    print("  6. Training ~25-30 min for 50 epochs")
+    print("  7. Webcam runs at ~5-8 FPS")
 
 
 if __name__ == "__main__":

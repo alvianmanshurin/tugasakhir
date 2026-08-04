@@ -54,6 +54,13 @@ dataset:
   val_images: "data/annotated/images/val"
   train_labels: "data/annotated/labels/train"
   val_labels: "data/annotated/labels/val"
+  # Video source for frame extraction
+  video_source: "D:/KULIAH/Tugas Akhir/Data video Tugas Akhir"
+  video_files:
+    - "KIRI-7.MOV"
+    - "KIRI-9.MOV"
+    - "TENGAH-7.MOV"
+    - "TENGAH-9.MOV"
 
 # Detection Configuration
 detection:
