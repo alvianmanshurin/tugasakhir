@@ -74,6 +74,30 @@ detection:
   show_labels: true
   classes: [0, 1, 2, 3]
 
+# ROI Configuration (Region of Interest) - 20m Road Boundary
+roi:
+  enabled: true
+  max_distance_m: 20.0  # Hanya objek dalam 20 meter yang dideteksi
+  # Koordinat trapezoid ROI (disesuaikan dengan sudut kamera)
+  # Format: [x, y] --top- = jauh, -bottom- = dekat kamera
+  boundary:
+    top_left: [150, 120]     # Posisi kiri atas (ujung jalan 20m)
+    top_right: [490, 120]    # Posisi kanan atas (ujung jalan 20m)
+    bottom_left: [0, 416]    # Posisi kiri bawah (dekat kamera)
+    bottom_right: [640, 416] # Posisi kanan bawah (dekat kamera)
+  min_bbox_height: 20        # Ukuran bbox minimum (px)
+  draw_roi: true             # Gambar area ROI di frame
+
+# Object Tracking Configuration (ByteTrack-inspired)
+tracking:
+  enabled: true
+  max_age: 30               # Hapus track setelah 30 frame tanpa match
+  min_hits: 3               # Track dianggap valid setelah 3 match
+  max_distance: 80.0        # Jarak maksimum matching (px)
+  track_buffer: 50          # Simpan 50 center history per track
+  show_track_id: true       # Tampilkan ID di bounding box
+  show_velocity: false      # Tampilkan vektor kecepatan
+
 # Counting Configuration
 counting:
   line_position: 0.5
