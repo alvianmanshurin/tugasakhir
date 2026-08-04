@@ -1,0 +1,14 @@
+# Dataset Configuration for Vehicle Detection
+# YOLOv8 Format
+
+path: ../data/annotated
+train: images/train
+val: images/val
+
+# Classes
+nc: 4
+names:
+  0: motor
+  1: mobil
+  2: bus
+  3: truk

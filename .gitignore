@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+data/raw/*
+data/annotated/images/train/*
+data/annotated/images/val/*
+data/annotated/labels/train/*
+data/annotated/labels/val/*
+!data/annotated/images/.gitkeep
+!data/annotated/labels/.gitkeep
+!data/raw/.gitkeep
+
+# Models
+models/**/*.pt
+models/**/*.onnx
+models/**/*.tflite
+
+# Outputs
+outputs/detections/*
+outputs/evaluation/*
+!outputs/detections/.gitkeep
+!outputs/evaluation/.gitkeep
+
+# Logs
+runs/
+wandb/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

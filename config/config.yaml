@@ -1,0 +1,101 @@
+# Project Configuration - OPTIMIZED FOR LOW-END LAPTOP
+# PENGEMBANGAN SUB SISTEM PERHITUNGAN JUMLAH KENDARAAN BERMOTOR BERBASIS PENGOLAHAN CITRA
+# Studi Kasus: UPT K3L ITERA
+
+# Hardware Info:
+# - CPU: Intel Core i3-1115G4 (2 cores, 4 threads, 3.0GHz)
+# - RAM: 8GB
+# - GPU: Intel UHD Graphics (Integrated, NO CUDA)
+# - OS: Windows 11 Home
+
+project:
+  name: "Vehicle Counting System - UPT K3L ITERA"
+  author: "Penelitian Tugas Akhir"
+  version: "1.0.0"
+
+# Model Configuration - Using YOLOv8n (Nano) for CPU
+model:
+  # yolov8n = Nano (3.2M params) - TERBAIK untuk CPU/laptop rendah
+  # yolov8s = Small (11.2M params) - alternatif jika ingin lebih akurat
+  # yolov8m = Medium (25.9M params) - TIDAK direkomendasikan untuk laptop ini
+  architecture: "yolov8n.pt"
+  input_size: 416  # Dikurangi dari 640 untuk kecepatan di CPU
+  confidence_threshold: 0.5
+  iou_threshold: 0.45
+  device: "cpu"  # Explicit CPU karena tidak ada CUDA
+
+# Training Configuration - Optimized for CPU
+training:
+  epochs: 50  # Dikurangi dari 100 untuk hemat waktu
+  batch_size: 4  # Dikurangi dari 16 untuk hemat RAM (8GB)
+  learning_rate: 0.01
+  image_size: 416  # Dikurangi dari 640 untuk kecepatan
+  patience: 15  # Early stopping
+  save_period: 10
+  workers: 2  # Dikurangi dari 4 untuk hemat RAM
+  optimizer: "SGD"  # SGD lebih hemat memori dari Adam
+  lr0: 0.01
+  lrf: 0.01
+  momentum: 0.937
+  weight_decay: 0.0005
+  warmup_epochs: 3.0
+  warmup_momentum: 0.8
+  warmup_bias_lr: 0.1
+  close_mosaic: 10
+  # Tambahan untuk CPU optimization
+  amp: false  # Disable mixed precision (CPU tidak support)
+  cache: false  # Disable caching untuk hemat RAM
+  verbose: true
+
+# Dataset Configuration
+dataset:
+  yaml_path: "data/dataset.yaml"
+  train_images: "data/annotated/images/train"
+  val_images: "data/annotated/images/val"
+  train_labels: "data/annotated/labels/train"
+  val_labels: "data/annotated/labels/val"
+
+# Detection Configuration
+detection:
+  source: "data/raw"
+  output_dir: "outputs/detections"
+  save_frames: true
+  save_video: true
+  show_preview: false
+  line_thickness: 2
+  show_conf: true
+  show_labels: true
+  classes: [0, 1, 2, 3]
+
+# Counting Configuration
+counting:
+  line_position: 0.5
+  direction: "both"
+  min_track_length: 5
+  max_lost_frames: 30
+
+# Evaluation Configuration
+evaluation:
+  output_dir: "outputs/evaluation"
+  metrics:
+    - "precision"
+    - "recall"
+    - "f1_score"
+    - "map50"
+    - "map50_95"
+    - "fps"
+  confusion_matrix: true
+  pr_curve: true
+  f1_curve: true
+
+# Visualization
+visualization:
+  color_map:
+    motor: [255, 0, 0]
+    mobil: [0, 255, 0]
+    bus: [0, 0, 255]
+    truk: [255, 255, 0]
+  font_scale: 0.6
+  font_thickness: 2
+  show_fps: true
+  show_count: true

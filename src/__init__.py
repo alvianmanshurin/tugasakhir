@@ -1,0 +1,5 @@
+"""PENGEMBANGAN SUB SISTEM PERHITUNGAN JUMLAH KENDARAAN BERMOTOR BERBASIS PENGOLAHAN CITRA
+Studi Kasus: UPT K3L ITERA"""
+
+__version__ = "1.0.0"
+__author__ = "Penelitian Tugas Akhir"
