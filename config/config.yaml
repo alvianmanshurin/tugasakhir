@@ -74,17 +74,16 @@ detection:
   show_labels: true
   classes: [0, 1, 2, 3]
 
-# ROI Configuration (Region of Interest) - 20m Road Boundary
+# ROI Configuration (Region of Interest)
 roi:
   enabled: true
-  max_distance_m: 20.0  # Hanya objek dalam 20 meter yang dideteksi
   # Koordinat trapezoid ROI (disesuaikan dengan sudut kamera)
-  # Format: [x, y] --top- = jauh, -bottom- = dekat kamera
+  # Format: [x, y]
   boundary:
-    top_left: [150, 120]     # Posisi kiri atas (ujung jalan 20m)
-    top_right: [490, 120]    # Posisi kanan atas (ujung jalan 20m)
-    bottom_left: [0, 416]    # Posisi kiri bawah (dekat kamera)
-    bottom_right: [640, 416] # Posisi kanan bawah (dekat kamera)
+    top_left: [60, 497]      # Kiri atas
+    top_right: [390, 484]    # Kanan atas
+    bottom_left: [111, 1007] # Kiri bawah
+    bottom_right: [979, 822] # Kanan bawah
   min_bbox_height: 20        # Ukuran bbox minimum (px)
   draw_roi: true             # Gambar area ROI di frame
 
