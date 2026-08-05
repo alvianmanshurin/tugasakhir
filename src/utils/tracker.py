@@ -39,7 +39,7 @@ class Track:
         return ((x1 + x2) / 2, (y1 + y2) / 2)
 
     @property
-    def is_confirmed) -> bool:
+    def is_confirmed(self) -> bool:
         """Mengecek apakah track sudah terkonfirmasi (minimal 3 kecocokan)."""
         return self.hits >= 3
 

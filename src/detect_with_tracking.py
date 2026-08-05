@@ -77,16 +77,14 @@ class VehicleDetectionPipeline:
         # Inisialisasi Filter ROI
         boundary_cfg = roi_cfg.get("boundary", {})
         boundary = ROIBoundary(
-            top_left=tuple(boundary_cfg.get("top_left", [150, 120])),
-            top_right=tuple(boundary_cfg.get("top_right", [490, 120])),
-            bottom_left=tuple(boundary_cfg.get("bottom_left", [0, 416])),
-            bottom_right=tuple(boundary_cfg.get("bottom_right", [640, 416])),
-            max_distance_m=roi_cfg.get("max_distance_m", 20.0),
+            top_left=tuple(boundary_cfg.get("top_left", [60, 497])),
+            top_right=tuple(boundary_cfg.get("top_right", [390, 484])),
+            bottom_left=tuple(boundary_cfg.get("bottom_left", [111, 1007])),
+            bottom_right=tuple(boundary_cfg.get("bottom_right", [979, 822])),
         )
         self.roi_config = ROIConfig(
             enabled=roi_cfg.get("enabled", True),
             boundary=boundary,
-            max_distance_m=roi_cfg.get("max_distance_m", 20.0),
             min_bbox_height=roi_cfg.get("min_bbox_height", 20),
         )
         self.roi_filter = ROIFilter(self.roi_config)
@@ -234,8 +232,6 @@ class VehicleDetectionPipeline:
             # Buat label
             track_id = t["track_id"]
             label_parts = [f"ID:{track_id} {cls_name}"]
-            if "distance_m" in t:
-                label_parts.append(f"{t['distance_m']}m")
             label_parts.append(f"{t['confidence']:.2f}")
             label = " ".join(label_parts)
 
