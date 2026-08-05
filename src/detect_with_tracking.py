@@ -1,5 +1,6 @@
-"""Vehicle Detection + ROI Filtering + Object Tracking Pipeline
-Optimized for CPU (Intel i3-1115G4, 8GB RAM)
+"""
+Pipeline Deteksi Kendaraan + Pemfilteran ROI + Pelacakan Objek
+Dioptimalkan untuk CPU (Intel i3-1115G4, 8GB RAM)
 """
 
 import os
@@ -20,38 +21,60 @@ from utils.counter import VehicleCounter
 
 
 def load_config(config_path="config/config.yaml"):
+    """Memuat file konfigurasi YAML dari path yang diberikan."""
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
 
 class VehicleDetectionPipeline:
-    """Full pipeline: YOLOv8 Detection + ROI Filter + Object Tracker + Counter."""
+    """
+    Pipeline lengkap: Deteksi YOLOv8 + Filter ROI + Pelacak Objek + Penghitung.
+    
+    Alur kerja:
+    1. Baca frame dari video/webcam
+    2. Jalankan inferensi YOLOv8 untuk deteksi kendaraan
+    3. Filter deteksi berdasarkan ROI (area jalan 20m)
+    4. Lacak objek menggunakan ByteTrack-inspired tracker
+    5. Hitung kendaraan yang melewati garis penghitung
+    6. Gambar anotasi pada frame
+    7. Tampilkan HUD (Heads-Up Display) dengan statistik
+    """
 
+    # Pemetaan ID kelas ke nama kelas
     CLASS_NAMES = {0: "motor", 1: "mobil", 2: "bus", 3: "truk"}
+    
+    # Warna bounding box per kelas (BGR)
     COLORS = {
-        "motor": (255, 0, 0),
-        "mobil": (0, 255, 0),
-        "bus": (0, 0, 255),
-        "truk": (255, 255, 0),
+        "motor": (255, 0, 0),    # Biru
+        "mobil": (0, 255, 0),    # Hijau
+        "bus": (0, 0, 255),      # Merah
+        "truk": (255, 255, 0),   # Cyan
     }
 
     def __init__(self, config: dict, model_path: str = None):
+        """
+        Inisialisasi pipeline deteksi kendaraan.
+        
+        Args:
+            config: dict konfigurasi dari config.yaml
+            model_path: path ke model YOLOv8 .pt (opsional)
+        """
         self.config = config
         model_cfg = config["model"]
         roi_cfg = config.get("roi", {})
         track_cfg = config.get("tracking", {})
         count_cfg = config.get("counting", {})
 
-        # Load YOLO model
+        # Memuat model YOLOv8
         if model_path is None:
             model_path = "models/yolov8n_vehicle/weights/best.pt"
             if not os.path.exists(model_path):
                 model_path = model_cfg["architecture"]
 
-        print(f"[INFO] Loading model: {model_path}")
+        print(f"[INFO] Memuat model: {model_path}")
         self.model = YOLO(model_path)
 
-        # ROI Filter
+        # Inisialisasi Filter ROI
         boundary_cfg = roi_cfg.get("boundary", {})
         boundary = ROIBoundary(
             top_left=tuple(boundary_cfg.get("top_left", [150, 120])),
@@ -69,7 +92,7 @@ class VehicleDetectionPipeline:
         self.roi_filter = ROIFilter(self.roi_config)
         self.show_roi = roi_cfg.get("draw_roi", True)
 
-        # Object Tracker
+        # Inisialisasi Pelacak Objek
         self.tracker = ObjectTracker(
             max_age=track_cfg.get("max_age", 30),
             min_hits=track_cfg.get("min_hits", 3),
@@ -79,7 +102,7 @@ class VehicleDetectionPipeline:
         self.show_track_id = track_cfg.get("show_track_id", True)
         self.show_velocity = track_cfg.get("show_velocity", False)
 
-        # Vehicle Counter (line crossing)
+        # Inisialisasi Penghitung Kendaraan (persilangan garis)
         self.counter = VehicleCounter(
             line_position=count_cfg.get("line_position", 0.5),
             direction=count_cfg.get("direction", "both"),
@@ -87,22 +110,41 @@ class VehicleDetectionPipeline:
             max_lost_frames=count_cfg.get("max_lost_frames", 30),
         )
 
-        # FPS tracking
+        # Pelacakan FPS
         self.fps_history = []
         self.total_detections = 0
         self.total_filtered = 0
 
     def process_frame(self, frame: np.ndarray) -> tuple:
-        """Process a single frame. Returns (annotated_frame, stats)."""
+        """
+        Memproses satu frame gambar.
+        
+        Proses:
+        1. Resize frame untuk inferensi
+        2. Jalankan YOLOv8 detection
+        3. Konversi koordinat kembali ke ukuran asli
+        4. Filter deteksi menggunakan ROI
+        5. Lacak objek menggunakan tracker
+        6. Perbarui penghitung kendaraan
+        7. Gambar anotasi pada frame
+        
+        Args:
+            frame: frame gambar asli (BGR)
+            
+        Returns:
+            Tuple (frame_labeled, stats) dimana:
+            - frame_labeled: frame dengan anotasi
+            - stats: dict statistik (fps, jumlah deteksi, dll)
+        """
         start = time.time()
         input_size = self.config["model"]["input_size"]
         conf_thresh = self.config["model"]["confidence_threshold"]
         iou_thresh = self.config["model"]["iou_threshold"]
 
-        # Resize for inference
+        # Resize frame untuk inferensi
         frame_resized = cv2.resize(frame, (input_size, input_size))
 
-        # YOLO inference
+        # Jalankan inferensi YOLOv8
         results = self.model(
             frame_resized,
             conf=conf_thresh,
@@ -110,22 +152,23 @@ class VehicleDetectionPipeline:
             verbose=False,
         )
 
-        # Scale factors
+        # Hitung faktor skala untuk konversi koordinat
         scale_x = frame.shape[1] / input_size
         scale_y = frame.shape[0] / input_size
 
-        # Parse detections
+        # Parsing hasil deteksi
         detections = []
         for r in results:
             if r.boxes is None:
                 continue
             for box in r.boxes:
                 cls_id = int(box.cls[0])
+                # Hanya proses kelas yang dikenal
                 if cls_id not in self.CLASS_NAMES:
                     continue
                 conf = float(box.conf[0])
                 xyxy = box.xyxy[0].tolist()
-                # Scale back to original
+                # Konversi koordinat kembali ke ukuran asli frame
                 xyxy[0] *= scale_x
                 xyxy[1] *= scale_y
                 xyxy[2] *= scale_x
@@ -140,14 +183,14 @@ class VehicleDetectionPipeline:
 
         self.total_detections += len(detections)
 
-        # ROI filtering
+        # Filter deteksi menggunakan ROI
         filtered = self.roi_filter.filter_detections(detections, frame.shape)
         self.total_filtered += len(filtered)
 
-        # Object tracking
+        # Lacak objek menggunakan tracker
         tracked = self.tracker.update(filtered)
 
-        # Update counter (for line crossing)
+        # Perbarui penghitung (untuk persilangan garis)
         counter_input = [
             {
                 "class_id": t["class_id"],
@@ -159,36 +202,36 @@ class VehicleDetectionPipeline:
         ]
         self.counter.update(counter_input, frame.shape[0])
 
-        # FPS
+        # Hitung FPS
         inference_time = time.time() - start
         fps = 1.0 / inference_time if inference_time > 0 else 0
         self.fps_history.append(fps)
         avg_fps = np.mean(self.fps_history[-30:])
 
-        # Draw results
+        # Gambar hasil pada frame
         result_frame = frame.copy()
 
-        # Draw ROI
+        # Gambar ROI
         if self.show_roi:
             result_frame = self.roi_filter.draw_roi(result_frame)
 
-        # Draw counting line
+        # Gambar garis penghitung
         line_y = int(frame.shape[0] * self.counter.line_position)
         cv2.line(result_frame, (0, line_y), (frame.shape[1], line_y),
                 (0, 255, 255), 2)
-        cv2.putText(result_frame, "COUNTING LINE", (10, line_y - 10),
+        cv2.putText(result_frame, "GARIS HITUNG", (10, line_y - 10),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
-        # Draw tracked objects
+        # Gambar objek yang dilacak
         for t in tracked:
             x1, y1, x2, y2 = [int(c) for c in t["bbox"]]
             cls_name = t["class_name"]
             color = self.COLORS.get(cls_name, (0, 255, 0))
 
-            # Bounding box
+            # Gambar bounding box
             cv2.rectangle(result_frame, (x1, y1), (x2, y2), color, 2)
 
-            # Label
+            # Buat label
             track_id = t["track_id"]
             label_parts = [f"ID:{track_id} {cls_name}"]
             if "distance_m" in t:
@@ -196,10 +239,11 @@ class VehicleDetectionPipeline:
             label_parts.append(f"{t['confidence']:.2f}")
             label = " ".join(label_parts)
 
+            # Gambar label di atas bbox
             cv2.putText(result_frame, label, (x1, y1 - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-            # Velocity arrow
+            # Gambar panah kecepatan (opsional)
             if self.show_velocity and "velocity" in t:
                 vx, vy = t["velocity"]
                 cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
@@ -208,7 +252,7 @@ class VehicleDetectionPipeline:
                 cv2.arrowedLine(result_frame, (cx, cy), (end_x, end_y),
                               (255, 255, 255), 2)
 
-        # HUD
+        # Gambar HUD (Heads-Up Display)
         self._draw_hud(result_frame, tracked, avg_fps)
 
         stats = {
@@ -222,23 +266,37 @@ class VehicleDetectionPipeline:
         return result_frame, stats
 
     def _draw_hud(self, frame, tracked, fps):
-        """Draw heads-up display on frame."""
+        """
+        Menggambar Heads-Up Display (HUD) pada frame.
+        
+        HUD menampilkan:
+        - FPS saat ini
+        - Jumlah objek per kelas (motor, mobil, bus, truk)
+        - Total kendaraan yang melewati garis penghitung
+        - Jumlah track aktif
+        
+        Args:
+            frame: frame yang akan digambar HUD
+            tracked: daftar objek yang dilacak
+            fps: FPS saat ini
+        """
         h, w = frame.shape[:2]
 
-        # Background panel
+        # Panel latar belakang HUD
         cv2.rectangle(frame, (0, 0), (w, 90), (0, 0, 0), -1)
         cv2.rectangle(frame, (0, 0), (w, 90), (100, 100, 100), 1)
 
-        # FPS
+        # Tampilkan FPS
         cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-        # Vehicle counts
+        # Hitung jumlah objek per kelas
         counts = {}
         for t in tracked:
             name = t["class_name"]
             counts[name] = counts.get(name, 0) + 1
 
+        # Tampilkan jumlah per kelas
         y_offset = 55
         for name in ["motor", "mobil", "bus", "truk"]:
             c = counts.get(name, 0)
@@ -247,46 +305,58 @@ class VehicleDetectionPipeline:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             y_offset += 20
 
-        # Total counted (line crossing)
-        cv2.putText(frame, f"Counted: {self.counter.total_count}",
-                   (w - 180, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+        # Tampilkan total kendaraan yang melewati garis
+        cv2.putText(frame, f"Terhitung: {self.counter.total_count}",
+                   (w - 200, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                    (0, 255, 255), 2)
 
-        # Active tracks
-        cv2.putText(frame, f"Active: {len(tracked)}",
-                   (w - 180, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+        # Tampilkan jumlah track aktif
+        cv2.putText(frame, f"Aktif: {len(tracked)}",
+                   (w - 200, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                    (255, 255, 255), 1)
 
     def process_video(self, source, output_path=None, show=False, max_frames=None):
-        """Process video file or webcam."""
+        """
+        Memproses video file atau webcam.
+        
+        Args:
+            source: path file video atau "0" untuk webcam
+            output_path: path file video output (opsional)
+            show: tampilkan preview window
+            max_frames: jumlah frame maksimum yang diproses (opsional)
+        """
         is_webcam = source in ["0", 0]
         cap = cv2.VideoCapture(0 if is_webcam else source)
 
         if not cap.isOpened():
-            print(f"[ERROR] Cannot open: {source}")
+            print(f"[ERROR] Tidak dapat membuka: {source}")
             return
 
+        # Dapatkan properti video
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps_src = cap.get(cv2.CAP_PROP_FPS) or 30
 
-        print(f"\n[INFO] Source: {'Webcam' if is_webcam else source}")
-        print(f"[INFO] Resolution: {width}x{height}")
+        print(f"\n[INFO] Sumber: {'Webcam' if is_webcam else source}")
+        print(f"[INFO] Resolusi: {width}x{height}")
         print(f"[INFO] ROI: {'ON' if self.roi_config.enabled else 'OFF'} "
-              f"(max {self.roi_config.max_distance_m}m)")
-        print(f"[INFO] Tracking: {'ON' if self.tracker else 'OFF'}")
-        print(f"[INFO] Press 'q' to quit\n")
+              f"(maks {self.roi_config.max_distance_m}m)")
+        print(f"[INFO] Pelacakan: {'ON' if self.tracker else 'OFF'}")
+        print(f"[INFO] Tekan 'q' untuk keluar\n")
 
+        # Inisialisasi VideoWriter jika perlu menyimpan output
         writer = None
         if output_path:
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             writer = cv2.VideoWriter(output_path, fourcc, fps_src, (width, height))
 
+        # Reset penghitung dan pelacak
         self.counter.reset()
         self.tracker.reset()
         self.fps_history = []
         frame_count = 0
 
+        # Loop utama pemrosesan video
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -296,22 +366,26 @@ class VehicleDetectionPipeline:
             if max_frames and frame_count > max_frames:
                 break
 
+            # Proses frame
             result_frame, stats = self.process_frame(frame)
 
+            # Simpan frame ke video output
             if writer:
                 writer.write(result_frame)
 
+            # Tampilkan preview
             if show:
-                cv2.imshow("Vehicle Detection + ROI + Tracking", result_frame)
+                cv2.imshow("Deteksi Kendaraan + ROI + Pelacakan", result_frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
+            # Tampilkan progress setiap 30 frame
             if frame_count % 30 == 0:
                 print(f"  Frame {frame_count} | FPS: {stats['fps']:.1f} | "
-                      f"Det: {stats['total_detections']} -> ROI: {stats['after_roi']} | "
-                      f"Tracked: {stats['tracked']} | Counted: {stats['counted']}")
+                      f"Deteksi: {stats['total_detections']} -> ROI: {stats['after_roi']} | "
+                      f"Dilacak: {stats['tracked']} | Terhitung: {stats['counted']}")
 
-        # Summary
+        # Ringkasan akhir
         cap.release()
         if writer:
             writer.release()
@@ -319,13 +393,13 @@ class VehicleDetectionPipeline:
             cv2.destroyAllWindows()
 
         print(f"\n{'='*60}")
-        print(f"PROCESSING COMPLETE")
-        print(f"  Frames processed: {frame_count}")
-        print(f"  Average FPS: {np.mean(self.fps_history):.1f}")
-        print(f"  Total detections: {self.total_detections}")
-        print(f"  After ROI filter: {self.total_filtered}")
-        print(f"  Final count: {self.counter.total_count}")
-        print(f"  Count by class: {dict(self.counter.class_counts)}")
+        print(f"PEMBERPROSESAN SELESAI")
+        print(f"  Frame diproses:    {frame_count}")
+        print(f"  FPS rata-rata:     {np.mean(self.fps_history):.1f}")
+        print(f"  Total deteksi:     {self.total_detections}")
+        print(f"  Setelah filter ROI: {self.total_filtered}")
+        print(f"  Jumlah akhir:      {self.counter.total_count}")
+        print(f"  Per kelas:         {dict(self.counter.class_counts)}")
         print(f"{'='*60}")
 
         return {
@@ -339,32 +413,33 @@ class VehicleDetectionPipeline:
 
 
 def main():
+    """Fungsi utama untuk menjalankan pipeline deteksi kendaraan dari command line."""
     parser = argparse.ArgumentParser(
-        description="Vehicle Detection + ROI + Tracking Pipeline"
+        description="Pipeline Deteksi Kendaraan + ROI + Pelacakan"
     )
     parser.add_argument("--source", type=str, default="0",
-                       help="Video file path or '0' for webcam")
+                       help="Path file video atau '0' untuk webcam")
     parser.add_argument("--model", type=str, default=None,
-                       help="Path to YOLOv8 .pt model")
+                       help="Path ke model YOLOv8 .pt")
     parser.add_argument("--output", type=str, default=None,
-                       help="Output video path")
+                       help="Path file video output")
     parser.add_argument("--show", action="store_true",
-                       help="Show preview window")
+                       help="Tampilkan preview window")
     parser.add_argument("--conf", type=float, default=None,
-                       help="Override confidence threshold")
+                       help="Override ambang batas confidence")
     parser.add_argument("--roi-max-dist", type=float, default=None,
-                       help="Override ROI max distance (meters)")
+                       help="Override jarak maksimum ROI (meter)")
     parser.add_argument("--no-roi", action="store_true",
-                       help="Disable ROI filtering")
+                       help="Nonaktifkan filter ROI")
     parser.add_argument("--no-track", action="store_true",
-                       help="Disable object tracking")
+                       help="Nonaktifkan pelacakan objek")
     parser.add_argument("--max-frames", type=int, default=None,
-                       help="Max frames to process")
+                       help="Jumlah frame maksimum yang diproses")
     args = parser.parse_args()
 
     config = load_config()
 
-    # CLI overrides
+    # Override konfigurasi dari command line
     if args.conf:
         config["model"]["confidence_threshold"] = args.conf
     if args.roi_max_dist:

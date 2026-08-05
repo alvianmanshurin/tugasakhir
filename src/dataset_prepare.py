@@ -1,4 +1,6 @@
-"""Dataset Preparation Script for Vehicle Detection"""
+"""
+Script Persiapan Dataset untuk Deteksi Kendaraan
+"""
 
 import os
 import shutil
@@ -10,46 +12,72 @@ from collections import Counter
 
 
 def load_config(config_path="config/config.yaml"):
-    """Load project configuration."""
+    """Memuat file konfigurasi proyek."""
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
 
 class DatasetPreparator:
-    """Prepare and validate dataset for YOLOv8 training."""
+    """
+    Persiapan dan validasi dataset untuk training YOLOv8.
+    
+    Fitur:
+    - Validasi struktur dataset dan label
+    - Split dataset menjadi train/val
+    - Buat file dataset.yaml
+    - Perbaiki label yang hilang
+    - Konversi anotasi LabelMe ke format YOLO
+    """
 
     def __init__(self, config):
+        """
+        Inisialisasi preparator dataset.
+        
+        Args:
+            config: dict konfigurasi dari config.yaml
+        """
         self.config = config
         self.dataset_cfg = config["dataset"]
         self.class_names = config["dataset"]["names"]
 
     def validate_dataset(self):
-        """Validate dataset structure and labels."""
+        """
+        Validasi struktur dataset dan label.
+        
+        Pemeriksaan yang dilakukan:
+        - Direktori gambar dan label ada
+        - Setiap gambar memiliki label yang sesuai
+        - Tidak ada kelas yang tidak dikenal
+        
+        Returns:
+            Tuple (stats, issues)
+        """
         print("=" * 60)
-        print("DATASET VALIDATION")
+        print("VALIDASI DATASET")
         print("=" * 60)
 
         issues = []
         stats = {"train": {"images": 0, "labels": 0, "classes": Counter()},
                  "val": {"images": 0, "labels": 0, "classes": Counter()}}
 
+        # Validasi untuk train dan val
         for split in ["train", "val"]:
             img_dir = Path(self.dataset_cfg[f"{split}_images"])
             lbl_dir = Path(self.dataset_cfg[f"{split}_labels"])
 
             if not img_dir.exists():
-                issues.append(f"Image directory not found: {img_dir}")
+                issues.append(f"Direktori gambar tidak ditemukan: {img_dir}")
                 continue
 
             if not lbl_dir.exists():
-                issues.append(f"Label directory not found: {lbl_dir}")
+                issues.append(f"Direktori label tidak ditemukan: {lbl_dir}")
                 continue
 
-            # Count images
+            # Hitung gambar
             img_files = list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png"))
             stats[split]["images"] = len(img_files)
 
-            # Count labels and classes
+            # Hitung label dan kelas
             for img_file in img_files:
                 lbl_file = lbl_dir / (img_file.stem + ".txt")
                 if lbl_file.exists():
@@ -62,33 +90,40 @@ class DatasetPreparator:
                                 if cls_id in self.class_names:
                                     stats[split]["classes"][self.class_names[cls_id]] += 1
                                 else:
-                                    issues.append(f"Unknown class {cls_id} in {lbl_file}")
+                                    issues.append(f"Kelas tidak dikenal {cls_id} di {lbl_file}")
                 else:
-                    issues.append(f"Missing label: {lbl_file}")
+                    issues.append(f"Label hilang: {lbl_file}")
 
-        # Print stats
+        # Tampilkan statistik
         for split in ["train", "val"]:
             print(f"\n[{split.upper()}]")
-            print(f"  Images: {stats[split]['images']}")
-            print(f"  Labels: {stats[split]['labels']}")
-            print(f"  Classes: {dict(stats[split]['classes'])}")
+            print(f"  Gambar: {stats[split]['images']}")
+            print(f"  Label: {stats[split]['labels']}")
+            print(f"  Kelas: {dict(stats[split]['classes'])}")
 
-        # Print issues
+        # Tampilkan masalah
         if issues:
-            print(f"\n[WARNINGS] Found {len(issues)} issues:")
+            print(f"\n[PERINGATAN] Ditemukan {len(issues)} masalah:")
             for issue in issues[:10]:
                 print(f"  - {issue}")
             if len(issues) > 10:
-                print(f"  ... and {len(issues) - 10} more")
+                print(f"  ... dan {len(issues) - 10} lagi")
         else:
-            print("\n[OK] Dataset validation passed!")
+            print("\n[OK] Validasi dataset berhasil!")
 
         return stats, issues
 
     def split_dataset(self, source_dir, train_ratio=0.8, seed=42):
-        """Split dataset into train/val sets."""
+        """
+        Split dataset menjadi train/val.
+        
+        Args:
+            source_dir: direktori sumber (berisi images/ dan labels/)
+            train_ratio: rasio data train (0-1)
+            seed: seed untuk random shuffle
+        """
         print("\n" + "=" * 60)
-        print("SPLITTING DATASET")
+        print("SPLIT DATASET")
         print("=" * 60)
 
         source = Path(source_dir)
@@ -96,44 +131,57 @@ class DatasetPreparator:
         labels_dir = source / "labels"
 
         if not images_dir.exists():
-            print(f"[ERROR] Images directory not found: {images_dir}")
+            print(f"[ERROR] Direktori gambar tidak ditemukan: {images_dir}")
             return
 
-        # Get all images
+        # Ambil semua gambar
         image_files = list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png"))
         random.seed(seed)
         random.shuffle(image_files)
 
+        # Split berdasarkan rasio
         split_idx = int(len(image_files) * train_ratio)
         train_files = image_files[:split_idx]
         val_files = image_files[split_idx:]
 
-        print(f"Total images: {len(image_files)}")
+        print(f"Total gambar: {len(image_files)}")
         print(f"Train: {len(train_files)} ({train_ratio*100:.0f}%)")
         print(f"Val: {len(val_files)} ({(1-train_ratio)*100:.0f}%)")
 
-        # Create directories
+        # Buat direktori
         for split in ["train", "val"]:
             (Path(self.dataset_cfg[f"{split}_images"])).mkdir(parents=True, exist_ok=True)
             (Path(self.dataset_cfg[f"{split}_labels"])).mkdir(parents=True, exist_ok=True)
 
-        # Copy files
+        # Salin file
         for split_name, files in [("train", train_files), ("val", val_files)]:
             for img_file in files:
-                # Copy image
+                # Salin gambar
                 dst_img = Path(self.dataset_cfg[f"{split_name}_images"]) / img_file.name
                 shutil.copy2(img_file, dst_img)
 
-                # Copy label
+                # Salin label
                 lbl_file = labels_dir / (img_file.stem + ".txt")
                 if lbl_file.exists():
                     dst_lbl = Path(self.dataset_cfg[f"{split_name}_labels"]) / lbl_file.name
                     shutil.copy2(lbl_file, dst_lbl)
 
-            print(f"[OK] {split_name} set copied")
+            print(f"[OK] Set {split_name} berhasil disalin")
 
     def create_dataset_yaml(self, output_path="data/dataset.yaml"):
-        """Create dataset YAML configuration file."""
+        """
+        Membuat file konfigurasi dataset.yaml.
+        
+        Format YOLOv8:
+        - path: path ke root dataset
+        - train: path relatif ke gambar train
+        - val: path relatif ke gambar val
+        - nc: jumlah kelas
+        - names: nama kelas
+        
+        Args:
+            output_path: path output file yaml
+        """
         dataset_yaml = {
             "path": str(Path(self.dataset_cfg["train_images"]).parent),
             "train": "images/train",
@@ -145,11 +193,18 @@ class DatasetPreparator:
         with open(output_path, "w") as f:
             yaml.dump(dataset_yaml, f, default_flow_style=False)
 
-        print(f"\n[OK] Dataset YAML created at: {output_path}")
+        print(f"\n[OK] Dataset YAML dibuat di: {output_path}")
         return dataset_yaml
 
     def fix_missing_labels(self, image_dir, label_dir, default_class=0):
-        """Create empty label files for images without labels."""
+        """
+        Membuat file label kosong untuk gambar yang belum memiliki label.
+        
+        Args:
+            image_dir: direktori gambar
+            label_dir: direktori label
+            default_class: ID kelas default (tidak digunakan, label kosong)
+        """
         image_dir = Path(image_dir)
         label_dir = Path(label_dir)
         label_dir.mkdir(parents=True, exist_ok=True)
@@ -163,16 +218,19 @@ class DatasetPreparator:
                 lbl_file.touch()
                 fixed += 1
 
-        print(f"[OK] Fixed {fixed} missing label files")
+        print(f"[OK] Berhasil perbaiki {fixed} file label yang hilang")
 
     def convert_labelme_to_yolo(self, labelme_dir, output_dir, class_mapping):
         """
-        Convert LabelMe JSON annotations to YOLO format.
-
+        Mengkonversi anotasi LabelMe (JSON) ke format YOLO.
+        
+        Format YOLO:
+        class_id center_x center_y width height (normalized 0-1)
+        
         Args:
-            labelme_dir: Directory with LabelMe JSON files
-            output_dir: Output directory for YOLO labels
-            class_mapping: Dict mapping class names to IDs
+            labelme_dir: direktori berisi file JSON LabelMe
+            output_dir: direktori output untuk label YOLO
+            class_mapping: dict pemetaan nama kelas ke ID
         """
         import json
 
@@ -197,7 +255,7 @@ class DatasetPreparator:
                 cls_id = class_mapping[label]
                 points = shape["points"]
 
-                # Convert to YOLO format (normalized center x, center y, width, height)
+                # Konversi ke format YOLO (normalized center x, center y, width, height)
                 x_coords = [p[0] for p in points]
                 y_coords = [p[1] for p in points]
 
@@ -211,30 +269,36 @@ class DatasetPreparator:
 
                 yolo_lines.append(f"{cls_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}")
 
-            # Save YOLO label
+            # Simpan label YOLO
             output_file = output_dir / (json_file.stem + ".txt")
             with open(output_file, "w") as f:
                 f.write("\n".join(yolo_lines))
 
             converted += 1
 
-        print(f"[OK] Converted {converted} LabelMe annotations to YOLO format")
+        print(f"[OK] Berhasil konversi {converted} anotasi LabelMe ke format YOLO")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Dataset Preparation Tool")
-    parser.add_argument("--config", type=str, default="config/config.yaml")
+    """Fungsi utama untuk menjalankan script persiapan dataset dari command line."""
+    parser = argparse.ArgumentParser(description="Alat Persiapan Dataset")
+    parser.add_argument("--config", type=str, default="config/config.yaml",
+                       help="Path file konfigurasi")
     parser.add_argument("--action", type=str, required=True,
                        choices=["validate", "split", "yaml", "fix-labels", "convert-labelme"],
-                       help="Action to perform")
-    parser.add_argument("--source", type=str, help="Source directory")
-    parser.add_argument("--output", type=str, help="Output directory")
-    parser.add_argument("--ratio", type=float, default=0.8, help="Train split ratio")
+                       help="Aksi yang akan dilakukan")
+    parser.add_argument("--source", type=str,
+                       help="Direktori sumber")
+    parser.add_argument("--output", type=str,
+                       help="Direktori output")
+    parser.add_argument("--ratio", type=float, default=0.8,
+                       help="Rasio split train")
     args = parser.parse_args()
 
     config = load_config(args.config)
     preparator = DatasetPreparator(config)
 
+    # Jalankan aksi sesuai pilihan
     if args.action == "validate":
         preparator.validate_dataset()
     elif args.action == "split":

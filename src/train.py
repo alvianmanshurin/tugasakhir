@@ -1,4 +1,5 @@
-"""Training Script - OPTIMIZED FOR LOW-END LAPTOP (CPU)
+"""
+Script Training - DIOPTIMALKAN UNTUK LAPTOP LOW-END (CPU)
 Hardware: Intel i3-1115G4, 8GB RAM, Intel UHD Graphics
 """
 
@@ -12,41 +13,53 @@ from ultralytics import YOLO
 
 
 def load_config(config_path="config/config.yaml"):
+    """Memuat file konfigurasi YAML dari path yang diberikan."""
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
 
 def check_system_resources():
-    """Check available system resources before training."""
+    """
+    Mengecek sumber daya sistem yang tersedia sebelum training.
+    
+    Informasi yang dicek:
+    - Jumlah core CPU (fisik dan logis)
+    - Frekuensi CPU
+    - Total RAM dan yang tersedia
+    - Rekomendasi batch size berdasarkan RAM
+    
+    Returns:
+        Dict berisi cpu_count, ram_gb, ram_available
+    """
     print("\n" + "=" * 60)
-    print("SYSTEM RESOURCE CHECK")
+    print("CEK SUMBER DAYA SISTEM")
     print("=" * 60)
 
-    # CPU info
+    # Info CPU
     cpu_count = psutil.cpu_count()
     cpu_freq = psutil.cpu_freq()
     print(f"\n[CPU]")
-    print(f"  Physical cores: {psutil.cpu_count(logical=False)}")
-    print(f"  Logical cores: {cpu_count}")
-    print(f"  Max frequency: {cpu_freq.max:.0f} MHz" if cpu_freq else "  Max frequency: N/A")
+    print(f"  Core fisik: {psutil.cpu_count(logical=False)}")
+    print(f"  Core logis: {cpu_count}")
+    print(f"  Frekuensi maks: {cpu_freq.max:.0f} MHz" if cpu_freq else "  Frekuensi maks: N/A")
 
-    # RAM info
+    # Info RAM
     ram = psutil.virtual_memory()
     ram_gb = ram.total / (1024**3)
     ram_available = ram.available / (1024**3)
     print(f"\n[RAM]")
     print(f"  Total: {ram_gb:.1f} GB")
-    print(f"  Available: {ram_available:.1f} GB")
-    print(f"  Used: {ram.percent}%")
+    print(f"  Tersedia: {ram_available:.1f} GB")
+    print(f"  Terpakai: {ram.percent}%")
 
-    # Recommendation
-    print(f"\n[RECOMMENDATION]")
+    # Rekomendasi
+    print(f"\n[REKOMENDASI]")
     if ram_gb < 8:
-        print("  WARNING: RAM < 8GB, use batch_size=2")
+        print("  PERINGATAN: RAM < 8GB, gunakan batch_size=2")
     elif ram_gb < 16:
-        print("  OK: 8GB RAM, use batch_size=4")
+        print("  OK: 8GB RAM, gunakan batch_size=4")
     else:
-        print("  OK: Sufficient RAM")
+        print("  OK: RAM cukup")
 
     print("=" * 60)
 
@@ -58,42 +71,57 @@ def check_system_resources():
 
 
 def train_model(config):
-    """Train YOLOv8n model optimized for CPU."""
+    """
+    Melatih model YOLOv8n yang dioptimalkan untuk CPU.
+    
+    Proses training:
+    1. Cek sumber daya sistem
+    2. Sesuaikan batch size berdasarkan RAM
+    3. Muat model YOLOv8n (Nano)
+    4. Jalankan training dengan parameter dari config
+    5. Simpan model best.pt dan last.pt
+    
+    Args:
+        config: dict konfigurasi dari config.yaml
+        
+    Returns:
+        Hasil training dari ultralytics
+    """
     cfg = config["training"]
     model_cfg = config["model"]
 
     print("\n" + "=" * 60)
-    print("VEHICLE DETECTION MODEL TRAINING")
-    print("OPTIMIZED FOR CPU - Intel i3-1115G4")
+    print("TRAINING MODEL DETEKSI KENDARAAN")
+    print("DIOPTIMALKAN UNTUK CPU - Intel i3-1115G4")
     print("=" * 60)
 
-    # Check resources
+    # Cek sumber daya
     resources = check_system_resources()
 
-    # Adjust batch size based on available RAM
+    # Sesuaikan batch size berdasarkan RAM yang tersedia
     recommended_batch = 4
     if resources["ram_gb"] < 6:
         recommended_batch = 2
-        print("\n[WARNING] Low RAM detected, reducing batch_size to 2")
+        print("\n[PERINGATAN] RAM rendah, mengurangi batch_size ke 2")
     elif resources["ram_gb"] >= 16:
         recommended_batch = 8
-        print("\n[INFO] High RAM detected, increasing batch_size to 8")
+        print("\n[INFO] RAM tinggi, meningkatkan batch_size ke 8")
 
-    # Load model
+    # Muat model
     model_name = model_cfg["architecture"]
-    print(f"\n[INFO] Model: {model_name} (Nano - optimized for CPU)")
-    print(f"[INFO] Image size: {cfg['image_size']}x{cfg['image_size']}")
+    print(f"\n[INFO] Model: {model_name} (Nano - dioptimalkan untuk CPU)")
+    print(f"[INFO] Ukuran gambar: {cfg['image_size']}x{cfg['image_size']}")
     print(f"[INFO] Batch size: {recommended_batch}")
     print(f"[INFO] Epochs: {cfg['epochs']}")
-    print(f"[INFO] Device: CPU (no CUDA)")
+    print(f"[INFO] Device: CPU (tanpa CUDA)")
 
-    # Estimated training time
-    est_time_per_epoch = 120  # rough estimate for CPU with 416x416
+    # Estimasi waktu training
+    est_time_per_epoch = 120  # estimasi kasar untuk CPU dengan 416x416
     total_est = est_time_per_epoch * cfg['epochs'] / 60
-    print(f"[INFO] Estimated training time: ~{total_est:.0f} minutes")
+    print(f"[INFO] Estimasi waktu training: ~{total_est:.0f} menit")
 
-    # Start training
-    print("\n[INFO] Starting training...")
+    # Mulai training
+    print("\n[INFO] Memulai training...")
     start_time = time.time()
 
     model = YOLO(model_name)
@@ -127,17 +155,25 @@ def train_model(config):
     elapsed = time.time() - start_time
     elapsed_min = elapsed / 60
 
-    print(f"\n[INFO] Training completed!")
-    print(f"[INFO] Total time: {elapsed_min:.1f} minutes")
-    print(f"[INFO] Best model: models/vehicle_detection/weights/best.pt")
-    print(f"[INFO] Last model: models/vehicle_detection/weights/last.pt")
+    print(f"\n[INFO] Training selesai!")
+    print(f"[INFO] Total waktu: {elapsed_min:.1f} menit")
+    print(f"[INFO] Model terbaik: models/vehicle_detection/weights/best.pt")
+    print(f"[INFO] Model terakhir: models/vehicle_detection/weights/last.pt")
 
     return results
 
 
 def quick_train(config):
-    """Quick training with minimal epochs for testing."""
-    print("\n[INFO] QUICK TRAIN MODE (10 epochs)")
+    """
+    Training cepat dengan epoch minimal untuk pengujian.
+    
+    Args:
+        config: dict konfigurasi
+        
+    Returns:
+        Hasil training
+    """
+    print("\n[INFO] MODE TRAINING CEPAT (10 epochs)")
     cfg = config["training"]
     cfg["epochs"] = 10
     cfg["patience"] = 5
@@ -145,8 +181,17 @@ def quick_train(config):
 
 
 def resume_training(config, last_model):
-    """Resume training from last checkpoint."""
-    print(f"\n[INFO] Resuming training from: {last_model}")
+    """
+    Melanjutkan training dari checkpoint terakhir.
+    
+    Args:
+        config: dict konfigurasi
+        last_model: path ke model last.pt
+        
+    Returns:
+        Hasil training
+    """
+    print(f"\n[INFO] Melanjutkan training dari: {last_model}")
 
     model = YOLO(last_model)
     results = model.train(
@@ -164,16 +209,24 @@ def resume_training(config, last_model):
 
 
 def main():
+    """Fungsi utama untuk menjalankan script training dari command line."""
     parser = argparse.ArgumentParser(
-        description="Train YOLOv8 for Vehicle Detection (CPU Optimized)"
+        description="Training YOLOv8 untuk Deteksi Kendaraan (Dioptimalkan untuk CPU)"
     )
-    parser.add_argument("--config", type=str, default="config/config.yaml")
-    parser.add_argument("--epochs", type=int, default=None)
-    parser.add_argument("--batch", type=int, default=None)
-    parser.add_argument("--imgsz", type=int, default=None)
-    parser.add_argument("--quick", action="store_true", help="Quick training (10 epochs)")
-    parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
-    parser.add_argument("--check", action="store_true", help="Check system resources only")
+    parser.add_argument("--config", type=str, default="config/config.yaml",
+                       help="Path file konfigurasi")
+    parser.add_argument("--epochs", type=int, default=None,
+                       help="Jumlah epoch")
+    parser.add_argument("--batch", type=int, default=None,
+                       help="Batch size")
+    parser.add_argument("--imgsz", type=int, default=None,
+                       help="Ukuran gambar")
+    parser.add_argument("--quick", action="store_true",
+                       help="Training cepat (10 epochs)")
+    parser.add_argument("--resume", type=str, default=None,
+                       help="Lanjutkan dari checkpoint")
+    parser.add_argument("--check", action="store_true",
+                       help="Cek sumber daya sistem saja")
     args = parser.parse_args()
 
     if args.check:
@@ -182,6 +235,7 @@ def main():
 
     config = load_config(args.config)
 
+    # Override konfigurasi dari command line
     if args.epochs:
         config["training"]["epochs"] = args.epochs
     if args.batch:
