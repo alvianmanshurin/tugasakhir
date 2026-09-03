@@ -49,14 +49,17 @@ class ModelEvaluator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Memuat model
-        model_path = "models/vehicle_detection/weights/best.pt"
+        model_path = config["model"].get("best_weights",
+            "D:/KULIAH/Tugas Akhir/tugasakhir/runs/detect/models/vehicle_detection/weights/best.pt")
         if not os.path.exists(model_path):
             print("[ERROR] Model tidak ditemukan. Silakan latih model terlebih dahulu.")
             raise FileNotFoundError(f"Model tidak ditemukan: {model_path}")
 
         print(f"[INFO] Memuat model: {model_path}")
         self.model = YOLO(model_path)
-        self.class_names = config["dataset"]["names"]
+        # class_names: {0: 'motor', 1: 'mobil', ...}
+        raw = config["dataset"].get("names", {0:'motor',1:'mobil',2:'bus',3:'truk'})
+        self.class_names = {int(k): v for k, v in raw.items()}
 
     def evaluate_map(self):
         """

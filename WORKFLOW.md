@@ -6,12 +6,13 @@
 ```
 [OK] Video frames extracted: 705 frames
 [OK] Split to train/val: 564 train, 141 val
-[OK] Auto-annotate with YOLOv8 pretrained (1097 boxes)
-[OK] Train YOLOv8n model (39 epochs, best mAP50: 71.6%)
-[OK] Evaluate model (mAP50: 64.7%, Precision: 62.2%, Recall: 76.1%)
-[OK] ROI Filter (20m road boundary)
+[OK] Auto-annotate with YOLOv11 pretrained (1097 boxes)
+[OK] Train YOLOv11n model (50 epochs, best mAP50: 72.6%)
+[OK] Evaluate model (mAP50: 72.6%, Precision: 62.5%, Recall: 74.5%)
+[OK] ROI Filter (area jalan)
 [OK] Object Tracking (ByteTrack-inspired)
 [OK] Detection + Tracking Pipeline
+[OK] Export TorchScript model
 [ ] Real-time testing with webcam
 [ ] Deployment at gate ITERA
 ```
@@ -20,9 +21,9 @@
 
 ## LANGKAH 1: Auto-Anotasi Dataset
 
-### 1.1 Auto-Annotate dengan YOLOv8 Pretrained
+### 1.1 Auto-Annotate dengan YOLOv11 Pretrained
 
-Script `src/auto_annotate.py` menggunakan model YOLOv8 yang sudah dilatih di COCO dataset untuk otomatis melabeli kendaraan.
+Script `src/auto_annotate.py` menggunakan model YOLOv11 yang sudah dilatih di COCO dataset untuk otomatis melabeli kendaraan.
 
 ```bash
 # Auto-annotate training set
@@ -69,34 +70,30 @@ labelImg data/annotated/images/train config/predefined_classes.txt
 ### 2.1 Training dengan Ultralytics
 
 ```bash
-$env:PYTHONPATH = "D:\PLib"
-python -c "
+python src/train.py
+```
+
+Atau langsung dengan Python:
+
+```python
 from ultralytics import YOLO
 
-model = YOLO('yolov8n.pt')
+model = YOLO('yolo11n.pt')
 results = model.train(
-    data='data/dataset.yaml',
-    epochs=50,
-    imgsz=416,
-    batch=4,
-    device='cpu',
-    workers=2,
-    optimizer='SGD',
-    lr0=0.01,
-    patience=15,
-    save_period=10,
-    project='models',
-    name='yolov8n_vehicle',
+    data='D:/KULIAH/Tugas Akhir/tugasakhir/data/dataset.yaml',
+    epochs=50, imgsz=416, batch=4,
+    device='cpu', workers=2, optimizer='SGD',
+    lr0=0.01, patience=15, save_period=10,
+    project='models', name='vehicle_detection',
     exist_ok=True
 )
-"
 ```
 
 ### 2.2 Training Configuration
 
 | Parameter | Value | Keterangan |
 |-----------|-------|------------|
-| Model     | YOLOv8n | Nano (3.2M params) |
+| Model     | YOLOv11n | Nano (2.6M params) |
 | Image Size | 416x416 | Dikurangi untuk CPU speed |
 | Batch Size | 4    | Hemat RAM 8GB |
 | Epochs    | 50    | Early stop di 15 epoch |
@@ -106,18 +103,20 @@ results = model.train(
 ### 2.3 Output Training
 
 ```
-models/yolov8n_vehicle/
+runs/detect/models/vehicle_detection/
 ├── weights/
 │   ├── best.pt          ← Best model (mAP50 terbaik)
 │   ├── last.pt          ← Last checkpoint
+│   ├── best.torchscript ← Exported TorchScript model
 │   ├── epoch0.pt        ← Checkpoint epoch 0
 │   ├── epoch10.pt       ← Checkpoint epoch 10
 │   └── epoch20.pt       ← Checkpoint epoch 20
 ├── results.csv          ← Training metrics
 ├── confusion_matrix.png
-├── F1_curve.png
-├── PR_curve.png
-└── P_curve.png
+├── BoxF1_curve.png
+├── BoxPR_curve.png
+├── BoxP_curve.png
+└── BoxR_curve.png
 ```
 
 ---
@@ -127,47 +126,32 @@ models/yolov8n_vehicle/
 ### 3.1 Jalankan Evaluasi
 
 ```bash
-$env:PYTHONPATH = "D:\PLib"
-python -c "
-from ultralytics import YOLO
-
-model = YOLO('models/yolov8n_vehicle/weights/best.pt')
-results = model.val(
-    data='data/dataset.yaml',
-    imgsz=416,
-    batch=4,
-    plots=True,
-    save_json=True,
-    project='outputs/evaluation',
-    name='yolov8n_best',
-    exist_ok=True
-)
-"
+python src/evaluate.py --task all
 ```
 
 ### 3.2 Hasil Evaluasi
 
 | Metric | Nilai |
 |--------|-------|
-| **Overall mAP50** | 64.7% |
-| **Overall mAP50-95** | 49.1% |
-| **Precision** | 62.2% |
-| **Recall** | 76.1% |
-| **Speed (CPU)** | 31.4ms/frame (~32 FPS) |
+| **Overall mAP50** | 72.6% |
+| **Overall mAP50-95** | 54.8% |
+| **Precision** | 62.5% |
+| **Recall** | 74.5% |
+| **Speed (CPU)** | 27.2ms/frame (~25 FPS) |
 
 ### 3.3 Per Kelas
 
-| Kelas | mAP50 | Recall | Precision |
-|-------|-------|--------|-----------|
-| motor | 77.0% | 81.7%  | 63.8%     |
-| mobil | 85.4% | 93.6%  | 67.7%     |
-| bus   | 52.8% | 66.7%  | 57.1%     |
-| truk  | 43.7% | 62.5%  | 60.0%     |
+| Kelas | Precision | Recall | mAP50 | mAP50-95 |
+|-------|-----------|--------|-------|----------|
+| motor | 68.9% | 81.7% | 80.8% | 55.1% |
+| mobil | 78.0% | 85.4% | 89.5% | 67.4% |
+| bus | 41.8% | 60.2% | 54.2% | 42.0% |
+| truk | 61.4% | 70.8% | 65.9% | 54.7% |
 
 ### 3.4 Output Files
 
 ```
-outputs/evaluation/yolov8n_best/
+runs/detect/models/vehicle_detection/
 ├── confusion_matrix.png
 ├── confusion_matrix_normalized.png
 ├── BoxF1_curve.png
@@ -175,7 +159,10 @@ outputs/evaluation/yolov8n_best/
 ├── BoxP_curve.png
 ├── BoxR_curve.png
 ├── val_batch0_pred.jpg
-└── predictions.json
+└── results.csv
+
+outputs/evaluation/
+└── evaluation_report.json
 ```
 
 ---
@@ -262,8 +249,8 @@ tugasakhir/
 │       │   ├── train/           ← 564 images
 │       │   └── val/             ← 141 images
 │       └── labels/
-│           ├── train/           ← 387 labeled (auto-annotate)
-│           └── val/             ← 110 labeled (auto-annotate)
+│           ├── train/           ← Labels train
+│           └── val/             ← Labels val
 │
 ├── src/
 │   ├── auto_annotate.py         ← Auto-annotation script
@@ -278,22 +265,27 @@ tugasakhir/
 │   ├── comparison.py
 │   └── utils/
 │       ├── counter.py           ← Vehicle counting
-│       ├── roi_filter.py        ← ROI 20m filter
+│       ├── roi_filter.py        ← ROI filter
 │       ├── tracker.py           ← Object tracking
 │       ├── visualizer.py
 │       └── metrics.py
 │
-├── models/
-│   └── yolov8n_vehicle/
-│       ├── weights/
-│       │   ├── best.pt          ← Best model (11.7 MB)
-│       │   └── last.pt
-│       └── results.csv
+├── runs/detect/models/vehicle_detection/
+│   ├── weights/
+│   │   ├── best.pt              ← Best model (PyTorch)
+│   │   ├── last.pt              ← Last checkpoint
+│   │   └── best.torchscript     ← Exported TorchScript
+│   ├── results.csv
+│   ├── confusion_matrix.png
+│   ├── BoxF1_curve.png
+│   ├── BoxPR_curve.png
+│   ├── BoxP_curve.png
+│   └── BoxR_curve.png
 │
 ├── outputs/
-│   ├── detections/
+│   ├── inference_val/           ← Inference results
 │   └── evaluation/
-│       └── yolov8n_best/        ← Evaluation plots
+│       └── evaluation_report.json
 │
 ├── WORKFLOW.md                  ← Dokumen ini
 ├── FLOW_DIAGRAM.md              ← Diagram alur
@@ -316,7 +308,7 @@ tugasakhir/
 
 ## Tips Penting
 
-1. **Auto-annotation** cukup akurat untuk starting point (mAP50: 64.7%)
+1. **Auto-annotation** cukup akurat untuk starting point (mAP50: 72.6%)
 2. **ROI boundary** harus disesuaikan dengan sudut kamera
 3. **Tracking** membantu mengurangi false positive
 4. **Model bisa di-improve** dengan manual annotation correction

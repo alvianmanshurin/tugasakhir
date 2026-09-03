@@ -42,7 +42,7 @@ class LightweightDetector:
         self.det_cfg = config["detection"]
         self.class_names = config["dataset"]["names"]
 
-        # Memuat model YOLOv8
+        # Memuat model YOLOv11
         model_path = "models/vehicle_detection/weights/best.pt"
         if not os.path.exists(model_path):
             model_path = self.model_cfg["architecture"]
@@ -276,7 +276,7 @@ def main():
     parser.add_argument("--source", type=str, required=True,
                        help="Path gambar atau direktori")
     parser.add_argument("--model", type=str, default=None,
-                       help="Path model YOLOv8")
+                       help="Path model YOLOv11")
     parser.add_argument("--conf", type=float, default=None,
                        help="Ambang batas confidence")
     parser.add_argument("--no-save", action="store_true",

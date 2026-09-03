@@ -8,7 +8,7 @@ from ultralytics import YOLO
 from utils.roi_filter import ROIFilter, ROIConfig, ROIBoundary
 from utils.tracker import ObjectTracker
 
-model = YOLO('models/yolov8n_vehicle/weights/best.pt')
+model = YOLO('runs/detect/models/vehicle_detection/weights/best.pt')
 CLASS_NAMES = {0: 'motor', 1: 'mobil', 2: 'bus', 3: 'truk'}
 COLORS = {'motor': (255, 0, 0), 'mobil': (0, 255, 0), 'bus': (0, 0, 255), 'truk': (255, 255, 0)}
 

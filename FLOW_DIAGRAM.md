@@ -35,7 +35,7 @@
            │
            ▼
     ┌──────────────┐
-    │  AUTO-       │  ← auto_annotate.py (YOLOv8 COCO)
+    │  AUTO-       │  ← auto_annotate.py (YOLOv11 COCO)
     │  ANNOTATE    │     1097 boxes detected
     │  (5 min)     │     387 train, 110 val labeled
     └──────┬───────┘
@@ -43,7 +43,7 @@
            ▼
     ┌──────────────┐
     │   TRAIN      │
-    │   MODEL      │  ← YOLOv8n (39 epochs)
+    │   MODEL      │  ← YOLOv11n (39 epochs)
     │  (30-40 min) │     mAP50: 71.6% (best)
     └──────┬───────┘
            │
@@ -58,7 +58,7 @@
     ┌──────────────────────────────────────────┐
     │            DETECTION PIPELINE            │
     │  ┌──────────────────────────────────┐    │
-    │  │  YOLOv8 Detection (imgsz=416)    │    │
+    │  │  YOLOv11 Detection (imgsz=416)    │    │
     │  └──────────────────────────────────┘    │
     │  ┌──────────────────────────────────┐    │
     │  │  ROI Filter (20m road boundary)  │    │
@@ -94,7 +94,7 @@
                     ┌─────────────────┐
                     │  LOAD MODEL     │
                     │  best.pt        │
-                    │  (YOLOv8n)      │
+                    │  (YOLOv11n)      │
                     └────────┬────────┘
                              │
                              ▼
@@ -393,7 +393,7 @@ python src/auto_annotate.py \
 
 TRAINING
 ─────────────────────────────────────────────────────────────
-python -c "from ultralytics import YOLO; model = YOLO('yolov8n.pt'); ..."
+python -c "from ultralytics import YOLO; model = YOLO('yolov11n.pt'); ..."
 
 EVALUATION
 ─────────────────────────────────────────────────────────────
@@ -464,16 +464,21 @@ tugasakhir/
 │        └── metrics.py           ← Metrics calculation
 │
 ├─── models/
-│    └── yolov8n_vehicle/
-│        ├── weights/
-│        │   ├── best.pt          ★ Best model (11.7 MB)
-│        │   └── last.pt
-│        └── results.csv
+│    └── vehicle_detection/        ← (di dalam runs/detect/models/)
+│
+├─── runs/detect/models/vehicle_detection/
+│    ├── weights/
+│    │   ├── best.pt              ★ Best model (PyTorch)
+│    │   ├── last.pt              ← Last checkpoint
+│    │   └── best.torchscript     ← Exported TorchScript
+│    ├── results.csv
+│    ├── confusion_matrix.png
+│    └── BoxF1_curve.png
 │
 ├─── outputs/
-│    ├── detections/
+│    ├── inference_val/           ← Inference results
 │    └── evaluation/
-│        └── yolov8n_best/        ★ Evaluation plots
+│        └── evaluation_report.json
 │
 ├── WORKFLOW.md                   ← UPDATED
 ├── FLOW_DIAGRAM.md              ← UPDATED (this file)
@@ -495,13 +500,13 @@ tugasakhir/
     [████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░]
     - Extract frames dari video (705 frames)
     - Split train/val (564/141)
-    - Auto-annotate dengan YOLOv8 COCO (1097 boxes)
+    - Auto-annotate dengan YOLOv11 COCO (1097 boxes)
     ✓ SELESAI
 
     Minggu 2: Training & Evaluation
     ═══════════════════════════════════════════════════════════
     [████████████████████████████████████████░░░░░░░░░░░░░░░░]
-    - Training YOLOv8n (39 epochs, ~30 menit)
+    - Training YOLOv11n (39 epochs, ~30 menit)
     - Evaluasi model (mAP50: 64.7%)
     - Buat ROI filter (20m boundary)
     - Buat object tracker (ByteTrack)
@@ -547,7 +552,7 @@ tugasakhir/
     ┌─────────────────────────────────────────────────────┐
     │              OPTIMIZED SETTINGS                     │
     │  ┌─────────────────────────────────────────────┐    │
-    │  │  Model: YOLOv8n (Nano, 3.2M params)         │    │
+    │  │  Model: YOLOv11n (Nano, 2.6M params)         │    │
     │  │  Image Size: 416x416                        │    │
     │  │  Batch Size: 4                              │    │
     │  │  Device: CPU                                │    │

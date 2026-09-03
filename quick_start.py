@@ -30,7 +30,7 @@ def check_system():
 
     # Recommendation
     print(f"\n[SETTINGS APPLIED]")
-    print(f"  Model: YOLOv8n (Nano - 3.2M params)")
+    print(f"  Model: YOLOv11n (Nano - 2.6M params)")
     print(f"  Image size: 416x416")
     print(f"  Batch size: 4")
     print(f"  Device: CPU")
@@ -72,12 +72,12 @@ def create_directories():
 
 
 def download_model():
-    """Download YOLOv8n model."""
-    print("\n[STEP 3] Downloading YOLOv8n model...")
+    """Download YOLOv11n model."""
+    print("\n[STEP 3] Downloading YOLOv11n model...")
     try:
         from ultralytics import YOLO
-        model = YOLO("yolov8n.pt")
-        print("[OK] YOLOv8n downloaded")
+        model = YOLO("yolov11n.pt")
+        print("[OK] YOLOv11n downloaded")
     except Exception as e:
         print(f"[ERROR] {e}")
 
@@ -101,7 +101,7 @@ def main():
     create_directories()
 
     print("\n[STEP 3] Download model?")
-    resp = input("  Download YOLOv8n? (y/n): ").strip().lower()
+    resp = input("  Download YOLOv11n? (y/n): ").strip().lower()
     if resp == 'y':
         download_model()
 
@@ -160,7 +160,7 @@ def main():
     print("\n" + "-" * 60)
     print("TIPS FOR THIS LAPTOP")
     print("-" * 60)
-    print("  1. Use YOLOv8n (default, fastest)")
+    print("  1. Use YOLOv11n (default, fastest)")
     print("  2. Image size 416 (not 640)")
     print("  3. Batch size 4 (saves RAM)")
     print("  4. Close other apps during training")

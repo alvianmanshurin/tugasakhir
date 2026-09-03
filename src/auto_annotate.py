@@ -1,5 +1,5 @@
 """
-Script auto-annotation menggunakan YOLOv8 pretrained (bobot COCO)
+Script auto-annotation menggunakan YOLOv11 pretrained (bobot COCO)
 Pemetaan kelas COCO ke kelas proyek:
   COCO: car(2), motorcycle(3), bus(5), truck(7)
   Proyek: motor(0), mobil(1), bus(2), truk(3)
@@ -33,17 +33,17 @@ def load_config(config_path="config/config.yaml"):
 def auto_annotate(
     image_dir,
     label_dir,
-    model_name="yolov8n.pt",
+    model_name="yolov11n.pt",
     conf_threshold=0.35,
     iou_threshold=0.45,
     img_size=640,
 ):
     """
-    Fungsi utama untuk auto-annotation gambar menggunakan YOLOv8 pretrained.
+    Fungsi utama untuk auto-annotation gambar menggunakan YOLOv11 pretrained.
     
     Proses:
     1. Memuat semua gambar dari image_dir
-    2. Menjalankan inferensi YOLOv8 pada setiap gambar
+    2. Menjalankan inferensi YOLOv11 pada setiap gambar
     3. Memetakan hasil deteksi COCO ke kelas proyek (motor/mobil/bus/truk)
     4. Mengkonversi koordinat ke format YOLO (normalized)
     5. Menyimpan label .txt dalam format YOLO
@@ -51,7 +51,7 @@ def auto_annotate(
     Args:
         image_dir: direktori berisi gambar yang akan di-annotate
         label_dir: direktori output untuk menyimpan file label .txt
-        model_name: nama model YOLOv8 (default: yolov8n.pt)
+        model_name: nama model YOLOv11 (default: yolov11n.pt)
         conf_threshold: ambang batas confidence (0-1)
         iou_threshold: ambang batas IoU untuk NMS
         img_size: ukuran gambar untuk inferensi
@@ -74,7 +74,7 @@ def auto_annotate(
     print(f"[INFO] Ditemukan {len(image_files)} gambar di {image_dir}")
     print(f"[INFO] Memuat model: {model_name}")
 
-    # Memuat model YOLOv8
+    # Memuat model YOLOv11
     model = YOLO(model_name)
 
     total_boxes = 0
@@ -153,10 +153,10 @@ def auto_annotate(
 
 def main():
     """Fungsi utama untuk menjalankan script auto-annotation dari command line."""
-    parser = argparse.ArgumentParser(description="Auto-annotate gambar dengan YOLOv8 pretrained")
+    parser = argparse.ArgumentParser(description="Auto-annotate gambar dengan YOLOv11 pretrained")
     parser.add_argument("--image-dir", type=str, required=True, help="Direktori gambar")
     parser.add_argument("--label-dir", type=str, required=True, help="Direktori output label")
-    parser.add_argument("--model", type=str, default="yolov8n.pt", help="Model YOLOv8 (default: yolov8n.pt)")
+    parser.add_argument("--model", type=str, default="yolov11n.pt", help="Model YOLOv11 (default: yolov11n.pt)")
     parser.add_argument("--conf", type=float, default=0.35, help="Ambang batas confidence (default: 0.35)")
     parser.add_argument("--iou", type=float, default=0.45, help="Ambang batas IoU (default: 0.45)")
     parser.add_argument("--img-size", type=int, default=640, help="Ukuran gambar inferensi (default: 640)")

@@ -28,11 +28,11 @@ def load_config(config_path="config/config.yaml"):
 
 class VehicleDetectionPipeline:
     """
-    Pipeline lengkap: Deteksi YOLOv8 + Filter ROI + Pelacak Objek + Penghitung.
+    Pipeline lengkap: Deteksi YOLOv11 + Filter ROI + Pelacak Objek + Penghitung.
     
     Alur kerja:
     1. Baca frame dari video/webcam
-    2. Jalankan inferensi YOLOv8 untuk deteksi kendaraan
+    2. Jalankan inferensi YOLOv11 untuk deteksi kendaraan
     3. Filter deteksi berdasarkan ROI (area jalan 20m)
     4. Lacak objek menggunakan ByteTrack-inspired tracker
     5. Hitung kendaraan yang melewati garis penghitung
@@ -57,7 +57,7 @@ class VehicleDetectionPipeline:
         
         Args:
             config: dict konfigurasi dari config.yaml
-            model_path: path ke model YOLOv8 .pt (opsional)
+            model_path: path ke model YOLOv11 .pt (opsional)
         """
         self.config = config
         model_cfg = config["model"]
@@ -65,9 +65,9 @@ class VehicleDetectionPipeline:
         track_cfg = config.get("tracking", {})
         count_cfg = config.get("counting", {})
 
-        # Memuat model YOLOv8
+        # Memuat model YOLOv11
         if model_path is None:
-            model_path = "models/yolov8n_vehicle/weights/best.pt"
+            model_path = "D:/KULIAH/Tugas Akhir/tugasakhir/runs/detect/models/vehicle_detection/weights/best.pt"
             if not os.path.exists(model_path):
                 model_path = model_cfg["architecture"]
 
@@ -119,7 +119,7 @@ class VehicleDetectionPipeline:
         
         Proses:
         1. Resize frame untuk inferensi
-        2. Jalankan YOLOv8 detection
+        2. Jalankan YOLOv11 detection
         3. Konversi koordinat kembali ke ukuran asli
         4. Filter deteksi menggunakan ROI
         5. Lacak objek menggunakan tracker
@@ -142,7 +142,7 @@ class VehicleDetectionPipeline:
         # Resize frame untuk inferensi
         frame_resized = cv2.resize(frame, (input_size, input_size))
 
-        # Jalankan inferensi YOLOv8
+        # Jalankan inferensi YOLOv11
         results = self.model(
             frame_resized,
             conf=conf_thresh,
@@ -335,8 +335,7 @@ class VehicleDetectionPipeline:
 
         print(f"\n[INFO] Sumber: {'Webcam' if is_webcam else source}")
         print(f"[INFO] Resolusi: {width}x{height}")
-        print(f"[INFO] ROI: {'ON' if self.roi_config.enabled else 'OFF'} "
-              f"(maks {self.roi_config.max_distance_m}m)")
+        print(f"[INFO] ROI: {'ON' if self.roi_config.enabled else 'OFF'}")
         print(f"[INFO] Pelacakan: {'ON' if self.tracker else 'OFF'}")
         print(f"[INFO] Tekan 'q' untuk keluar\n")
 
@@ -416,7 +415,7 @@ def main():
     parser.add_argument("--source", type=str, default="0",
                        help="Path file video atau '0' untuk webcam")
     parser.add_argument("--model", type=str, default=None,
-                       help="Path ke model YOLOv8 .pt")
+                       help="Path ke model YOLOv11 .pt")
     parser.add_argument("--output", type=str, default=None,
                        help="Path file video output")
     parser.add_argument("--show", action="store_true",

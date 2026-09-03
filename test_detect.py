@@ -9,7 +9,7 @@ from ultralytics import YOLO
 CLASS_NAMES = {0: 'motor', 1: 'mobil', 2: 'bus', 3: 'truk'}
 COLORS = {'motor': (255, 0, 0), 'mobil': (0, 255, 0), 'bus': (0, 0, 255), 'truk': (255, 255, 0)}
 
-model = YOLO('models/yolov8n_vehicle/weights/best.pt')
+model = YOLO('runs/detect/models/vehicle_detection/weights/best.pt')
 
 img_path = sys.argv[1] if len(sys.argv) > 1 else 'data/annotated/images/val/merged_00010.jpg'
 img = cv2.imread(img_path)

@@ -13,12 +13,12 @@ project:
   author: "Penelitian Tugas Akhir"
   version: "1.0.0"
 
-# Model Configuration - Using YOLOv8n (Nano) for CPU
+# Model Configuration - Using YOLOv11n (Nano) for CPU
 model:
-  # yolov8n = Nano (3.2M params) - TERBAIK untuk CPU/laptop rendah
-  # yolov8s = Small (11.2M params) - alternatif jika ingin lebih akurat
-  # yolov8m = Medium (25.9M params) - TIDAK direkomendasikan untuk laptop ini
-  architecture: "yolov8n.pt"
+  # yolov11n = Nano (2.6M params) - TERBAIK untuk CPU/laptop rendah
+  # yolov11s = Small (9.4M params) - alternatif jika ingin lebih akurat
+  # yolov11m = Medium (20.1M params) - TIDAK direkomendasikan untuk laptop ini
+  architecture: "yolo11n.pt"
   input_size: 416  # Dikurangi dari 640 untuk kecepatan di CPU
   confidence_threshold: 0.5
   iou_threshold: 0.45
@@ -49,7 +49,7 @@ training:
 
 # Dataset Configuration
 dataset:
-  yaml_path: "data/dataset.yaml"
+  yaml_path: "D:/KULIAH/Tugas Akhir/tugasakhir/data/dataset.yaml"
   train_images: "data/annotated/images/train"
   val_images: "data/annotated/images/val"
   train_labels: "data/annotated/labels/train"

@@ -1,7 +1,7 @@
 # Dataset Configuration for Vehicle Detection
 # YOLOv8 Format
 
-path: ../data/annotated
+path: D:/KULIAH/Tugas Akhir/tugasakhir/data/annotated
 train: images/train
 val: images/val
 

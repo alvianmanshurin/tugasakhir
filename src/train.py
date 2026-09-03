@@ -72,12 +72,12 @@ def check_system_resources():
 
 def train_model(config):
     """
-    Melatih model YOLOv8n yang dioptimalkan untuk CPU.
+    Melatih model YOLOv11n yang dioptimalkan untuk CPU.
     
     Proses training:
     1. Cek sumber daya sistem
     2. Sesuaikan batch size berdasarkan RAM
-    3. Muat model YOLOv8n (Nano)
+    3. Muat model YOLOv11n (Nano)
     4. Jalankan training dengan parameter dari config
     5. Simpan model best.pt dan last.pt
     
@@ -211,7 +211,7 @@ def resume_training(config, last_model):
 def main():
     """Fungsi utama untuk menjalankan script training dari command line."""
     parser = argparse.ArgumentParser(
-        description="Training YOLOv8 untuk Deteksi Kendaraan (Dioptimalkan untuk CPU)"
+        description="Training YOLOv11 untuk Deteksi Kendaraan (Dioptimalkan untuk CPU)"
     )
     parser.add_argument("--config", type=str, default="config/config.yaml",
                        help="Path file konfigurasi")

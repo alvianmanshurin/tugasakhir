@@ -2,7 +2,7 @@
 
 ## Studi Kasus: UPT K3L ITERA
 
-Sistem deteksi dan penghitungan kendaraan secara otomatis menggunakan YOLOv8 untuk pemantauan lalu lintas di gerbang masuk Kampus ITERA.
+Sistem deteksi dan penghitungan kendaraan secara otomatis menggunakan YOLOv11 untuk pemantauan lalu lintas di gerbang masuk Kampus ITERA.
 
 ---
 
@@ -23,7 +23,7 @@ Sistem deteksi dan penghitungan kendaraan secara otomatis menggunakan YOLOv8 unt
 
 | Parameter | Nilai | Keterangan |
 |-----------|-------|------------|
-| Model | YOLOv8n (Nano) | 3.2M params, tercepat untuk CPU |
+| Model | YOLOv11n (Nano) | 2.6M params, tercepat untuk CPU |
 | Image Size | 416x416 | Lebih cepat dari 640 |
 | Batch Size | 4 | Hemat RAM |
 | Device | CPU | Tidak ada CUDA |
@@ -223,7 +223,7 @@ python src/export_model.py --action export --format onnx tflite
 
 ## Tips untuk Laptop Ini
 
-1. Gunakan **YOLOv8n** (sudah default)
+1. Gunakan **YOLOv11n** (sudah default)
 2. Image size **416** (bukan 640)
 3. Batch size **4** (hemat RAM)
 4. Tutup aplikasi lain saat training
@@ -235,7 +235,7 @@ python src/export_model.py --action export --format onnx tflite
 
 ## Referensi
 
-- [YOLOv8 Documentation](https://docs.ultralytics.com/)
+- [YOLOv11 Documentation](https://docs.ultralytics.com/)
 - [OpenCV Documentation](https://docs.opencv.org/)
 - [LabelImg GitHub](https://github.com/heartexlabs/labelImg)
 - Dataset: Gerbang masuk Kampus ITERA
