@@ -97,12 +97,13 @@ tracking:
   show_track_id: true       # Tampilkan ID di bounding box
   show_velocity: false      # Tampilkan vektor kecepatan
 
-# Counting Configuration
+# Counting Configuration (Dual-Line)
 counting:
-  line_position: 0.5
-  direction: "both"
-  min_track_length: 5
-  max_lost_frames: 30
+  line1_position: 0.48           # Garis 1 (atas) - dalam ROI area
+  line2_position: 0.75           # Garis 2 (bawah) - dalam ROI area
+  direction: "both"              # "up", "down", atau "both"
+  min_track_length: 3            # Frame minimum sebelum dihitung
+  max_lost_frames: 30            # Maks frame lintasan hilang
 
 # Evaluation Configuration
 evaluation:

@@ -219,12 +219,11 @@ tracking:
 
 | Fitur | Keterangan |
 |-------|------------|
-| **ROI 20m** | Hanya objek dalam 20m yang dideteksi |
+| **ROI** | Filter area jalan |
 | **Object Tracking** | Setiap kendaraan punya ID unik |
-| **Distance Estimation** | Jarak objek ditampilkan |
-| **Line Crossing Counter** | Hitung kendaraan lewat garis |
+| **Dual-Line Counter** | Hitung kendaraan yang melewati 2 garis (atas → bawah atau sebaliknya) |
 | **Velocity Display** | Arah gerak kendaraan |
-| **HUD** | FPS, jumlah per kelas, active tracks |
+| **HUD** | FPS, jumlah per kelas, active tracks, jumlah terhitung |
 
 ---
 

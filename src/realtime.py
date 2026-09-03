@@ -35,11 +35,12 @@ class LightweightRealtimeDetector:
         print(f"[INFO] Loading model: {model_path}")
         self.model = YOLO(model_path)
 
-        # Counter
+        # Counter (dual-line)
         self.counter = VehicleCounter(
-            line_position=self.count_cfg["line_position"],
+            line1_position=self.count_cfg.get("line1_position", 0.48),
+            line2_position=self.count_cfg.get("line2_position", 0.75),
             direction=self.count_cfg["direction"],
-            min_track_length=self.count_cfg["min_track_length"],
+            min_track_length=self.count_cfg.get("min_track_length", 3),
             max_lost_frames=self.count_cfg["max_lost_frames"],
         )
 

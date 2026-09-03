@@ -5,6 +5,7 @@ Optimized for Intel i3-1115G4, 8GB RAM
 import os
 import sys
 import yaml
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 import threading
@@ -29,12 +30,14 @@ class VehicleDetectionGUI:
 
         # Config
         self.config = load_config()
-        self.class_names = self.config["dataset"]["names"]
+        self.class_names = self.config.get("dataset", {}).get("names", 
+            {0: "motor", 1: "mobil", 2: "bus", 3: "truk"})
 
         # Variables
         self.source_path = tk.StringVar()
-        self.model_path = tk.StringVar(value="models/vehicle_detection/weights/best.pt")
+        self.model_path = tk.StringVar(value="D:/KULIAH/Tugas Akhir/tugasakhir/runs/detect/models/vehicle_detection/weights/best.pt")
         self.conf_threshold = tk.DoubleVar(value=0.5)
+        self.rtsp_url = tk.StringVar()
         self.is_processing = False
 
         # Colors
@@ -91,9 +94,25 @@ class VehicleDetectionGUI:
         tk.Label(left_panel, text="Image/Video Path:", bg="#3c3c3c",
                 fg=self.fg_color).pack(anchor=tk.W, padx=10)
         source_frame = tk.Frame(left_panel, bg="#3c3c3c")
-        source_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        source_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
         tk.Entry(source_frame, textvariable=self.source_path, width=25).pack(side=tk.LEFT)
         tk.Button(source_frame, text="Browse", command=self._browse_source).pack(side=tk.LEFT, padx=5)
+
+        # CCTV section
+        tk.Label(left_panel, text="CCTV / RTSP", font=("Arial", 10, "bold"),
+                bg="#3c3c3c", fg=self.warning_color).pack(pady=(10, 5), anchor=tk.W, padx=10)
+
+        tk.Label(left_panel, text="RTSP URL:", bg="#3c3c3c",
+                fg=self.fg_color).pack(anchor=tk.W, padx=10)
+        rtsp_frame = tk.Frame(left_panel, bg="#3c3c3c")
+        rtsp_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+        tk.Entry(rtsp_frame, textvariable=self.rtsp_url, width=25).pack(side=tk.LEFT)
+
+        self.cctv_btn = tk.Button(left_panel, text="CCTV",
+                                   command=self._run_cctv,
+                                   bg="#ff5722", fg="white",
+                                   font=("Arial", 10, "bold"), height=2)
+        self.cctv_btn.pack(fill=tk.X, padx=10, pady=(0, 10))
 
         # Buttons
         btn_frame = tk.Frame(left_panel, bg="#3c3c3c")
@@ -227,116 +246,20 @@ class VehicleDetectionGUI:
             model = YOLO(model_path)
 
             source_path = Path(source)
+            video_exts = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv']
+            is_video = source_path.suffix.lower() in video_exts
 
-            if source_path.is_file():
+            if is_video:
+                # Video file
+                self._detect_video(source, model)
+
+            elif source_path.is_file():
                 # Single image
-                img = cv2.imread(source)
-                if img is None:
-                    self._update_status("Error: Cannot read image")
-                    return
-
-                start = time.time()
-                results = model(img, conf=self.conf_threshold.get(),
-                              imgsz=self.config["model"]["input_size"],
-                              verbose=False)
-                inference_time = time.time() - start
-
-                # Process results
-                counts = {name: 0 for name in self.class_names.values()}
-                detections = []
-
-                for result in results:
-                    if result.boxes is not None:
-                        for box in result.boxes:
-                            cls_id = int(box.cls[0])
-                            conf = float(box.conf[0])
-                            xyxy = box.xyxy[0].tolist()
-
-                            if cls_id < len(self.class_names):
-                                cls_name = self.class_names[cls_id]
-                                counts[cls_name] += 1
-                                detections.append({
-                                    "class": cls_name,
-                                    "confidence": conf
-                                })
-
-                # Draw on image
-                img_result = img.copy()
-                colors = [(255,0,0), (0,255,0), (0,0,255), (255,255,0)]
-
-                for result in results:
-                    if result.boxes is not None:
-                        for box in result.boxes:
-                            cls_id = int(box.cls[0])
-                            xyxy = box.xyxy[0].tolist()
-                            x1, y1, x2, y2 = [int(c) for c in xyxy]
-                            color = colors[cls_id % len(colors)]
-                            cv2.rectangle(img_result, (x1,y1), (x2,y2), color, 2)
-
-                # Display
-                self._display_image(img_result)
-
-                # Results
-                total = sum(counts.values())
-                fps = 1/inference_time if inference_time > 0 else 0
-                self.fps_label.config(text=f"FPS: {fps:.1f}")
-
-                result_text = f"Detection Results\n{'='*30}\n"
-                result_text += f"Total: {total} vehicles\n\n"
-                for name, count in counts.items():
-                    if count > 0:
-                        result_text += f"{name}: {count}\n"
-                result_text += f"\nInference: {inference_time*1000:.0f}ms"
-                result_text += f"\nFPS: {fps:.1f}"
-
-                self._update_results(result_text)
-                self._update_status("Detection complete")
+                self._detect_image(source, model)
 
             elif source_path.is_dir():
                 # Directory
-                exts = ["*.jpg", "*.jpeg", "*.png"]
-                images = []
-                for ext in exts:
-                    images.extend(source_path.glob(ext))
-
-                self._update_info(f"Processing {len(images)} images...\n\n")
-
-                total_counts = {name: 0 for name in self.class_names.values()}
-                total_vehicles = 0
-
-                for idx, img_path in enumerate(sorted(images), 1):
-                    if not self.is_processing:
-                        break
-
-                    img = cv2.imread(str(img_path))
-                    if img is None:
-                        continue
-
-                    results = model(img, conf=self.conf_threshold.get(),
-                                  imgsz=self.config["model"]["input_size"],
-                                  verbose=False)
-
-                    for result in results:
-                        if result.boxes is not None:
-                            for box in result.boxes:
-                                cls_id = int(box.cls[0])
-                                if cls_id < len(self.class_names):
-                                    total_counts[self.class_names[cls_id]] += 1
-                                    total_vehicles += 1
-
-                    if idx % 5 == 0:
-                        self._update_info(f"Processing: {idx}/{len(images)}\n"
-                                         f"Vehicles found: {total_vehicles}")
-
-                result_text = f"Batch Results\n{'='*30}\n"
-                result_text += f"Images: {len(images)}\n"
-                result_text += f"Total vehicles: {total_vehicles}\n\n"
-                for name, count in total_counts.items():
-                    if count > 0:
-                        result_text += f"{name}: {count}\n"
-
-                self._update_results(result_text)
-                self._update_status("Batch processing complete")
+                self._detect_directory(source, model)
 
         except Exception as e:
             self._update_status(f"Error: {str(e)}")
@@ -346,6 +269,169 @@ class VehicleDetectionGUI:
             self.is_processing = False
             self.detect_btn.config(state=tk.NORMAL)
             self.stop_btn.config(state=tk.DISABLED)
+
+    def _detect_image(self, source, model):
+        """Detect on single image."""
+        img = cv2.imread(source)
+        if img is None:
+            self._update_status("Error: Cannot read image")
+            return
+
+        start = time.time()
+        results = model(img, conf=self.conf_threshold.get(),
+                      imgsz=self.config["model"]["input_size"],
+                      verbose=False)
+        inference_time = time.time() - start
+
+        counts = {name: 0 for name in self.class_names.values()}
+        colors = [(255,0,0), (0,255,0), (0,0,255), (255,255,0)]
+
+        for result in results:
+            if result.boxes is not None:
+                for box in result.boxes:
+                    cls_id = int(box.cls[0])
+                    xyxy = box.xyxy[0].tolist()
+                    x1, y1, x2, y2 = [int(c) for c in xyxy]
+                    if cls_id < len(self.class_names):
+                        cls_name = self.class_names[cls_id]
+                        counts[cls_name] += 1
+                        color = colors[cls_id % len(colors)]
+                        cv2.rectangle(img, (x1,y1), (x2,y2), color, 2)
+                        label = f"{cls_name} {float(box.conf[0]):.2f}"
+                        cv2.putText(img, label, (x1, y1-10),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        self._display_image(img)
+
+        total = sum(counts.values())
+        fps = 1/inference_time if inference_time > 0 else 0
+        self.fps_label.config(text=f"FPS: {fps:.1f}")
+
+        result_text = f"Detection Results\n{'='*30}\n"
+        result_text += f"Total: {total} vehicles\n\n"
+        for name, count in counts.items():
+            if count > 0:
+                result_text += f"{name}: {count}\n"
+        result_text += f"\nInference: {inference_time*1000:.0f}ms"
+        result_text += f"\nFPS: {fps:.1f}"
+
+        self._update_results(result_text)
+        self._update_status("Detection complete")
+
+    def _detect_video(self, source, model):
+        """Detect on video file."""
+        import sys
+        sys.path.insert(0, os.path.dirname(__file__))
+        from detect_with_tracking import VehicleDetectionPipeline, load_config
+
+        config = load_config()
+        config["model"]["confidence_threshold"] = self.conf_threshold.get()
+
+        pipeline = VehicleDetectionPipeline(config, model_path=self.model_path.get())
+
+        cap = cv2.VideoCapture(source)
+        if not cap.isOpened():
+            self._update_status("Error: Cannot open video")
+            return
+
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps_src = cap.get(cv2.CAP_PROP_FPS) or 30
+
+        self._update_info(f"Video: {Path(source).name}\nResolusi: {width}x{height}\nTotal Frame: {total_frames}\nFPS: {fps_src}\n\nProcessing...")
+
+        output_path = str(Path(source).parent / f"{Path(source).stem}_output.mp4")
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(output_path, fourcc, fps_src, (width, height))
+
+        fps_history = []
+        frame_count = 0
+
+        while self.is_processing:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_count += 1
+            result_frame, stats = pipeline.process_frame(frame)
+
+            writer.write(result_frame)
+            fps_history.append(stats["fps"])
+            avg_fps = sum(fps_history[-30:]) / min(len(fps_history), 30)
+
+            self._display_cv_image(result_frame)
+            self.fps_label.config(text=f"FPS: {avg_fps:.1f}")
+
+            if frame_count % 30 == 0:
+                progress = frame_count / total_frames * 100 if total_frames > 0 else 0
+                info = f"Processing Video...\n"
+                info += f"Frame: {frame_count}/{total_frames}\n"
+                info += f"Progress: {progress:.1f}%\n"
+                info += f"FPS: {avg_fps:.1f}\n\n"
+                info += f"Detected: {stats['total_detections']}\n"
+                info += f"After ROI: {stats['after_roi']}\n"
+                info += f"Counted: {stats['counted']}"
+                self._update_info(info)
+
+        cap.release()
+        writer.release()
+
+        result_text = f"Video Complete\n{'='*30}\n"
+        result_text += f"Total Frame: {frame_count}\n"
+        result_text += f"Total Counted: {stats['counted']}\n"
+        result_text += f"Avg FPS: {avg_fps:.1f}\n\n"
+        result_text += f"Output saved:\n{output_path}"
+
+        self._update_results(result_text)
+        self._update_status(f"Video complete. Output: {output_path}")
+
+    def _detect_directory(self, source, model):
+        """Detect on directory of images."""
+        source_path = Path(source)
+        exts = ["*.jpg", "*.jpeg", "*.png", "*.bmp"]
+        images = []
+        for ext in exts:
+            images.extend(source_path.glob(ext))
+
+        self._update_info(f"Processing {len(images)} images...\n\n")
+
+        total_counts = {name: 0 for name in self.class_names.values()}
+        total_vehicles = 0
+
+        for idx, img_path in enumerate(sorted(images), 1):
+            if not self.is_processing:
+                break
+
+            img = cv2.imread(str(img_path))
+            if img is None:
+                continue
+
+            results = model(img, conf=self.conf_threshold.get(),
+                          imgsz=self.config["model"]["input_size"],
+                          verbose=False)
+
+            for result in results:
+                if result.boxes is not None:
+                    for box in result.boxes:
+                        cls_id = int(box.cls[0])
+                        if cls_id < len(self.class_names):
+                            total_counts[self.class_names[cls_id]] += 1
+                            total_vehicles += 1
+
+            if idx % 5 == 0:
+                self._update_info(f"Processing: {idx}/{len(images)}\n"
+                                 f"Vehicles found: {total_vehicles}")
+
+        result_text = f"Batch Results\n{'='*30}\n"
+        result_text += f"Images: {len(images)}\n"
+        result_text += f"Total vehicles: {total_vehicles}\n\n"
+        for name, count in total_counts.items():
+            if count > 0:
+                result_text += f"{name}: {count}\n"
+
+        self._update_results(result_text)
+        self._update_status("Batch processing complete")
 
     def _run_webcam(self):
         """Run webcam detection."""
@@ -472,6 +558,93 @@ class VehicleDetectionGUI:
         """Stop processing."""
         self.is_processing = False
         self._update_status("Stopping...")
+
+    def _run_cctv(self):
+        """Run CCTV/RTSP detection."""
+        url = self.rtsp_url.get()
+        if not url:
+            messagebox.showerror("Error", "Please enter RTSP URL.")
+            return
+
+        self.is_processing = True
+        self.detect_btn.config(state=tk.DISABLED)
+        self.cctv_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL)
+        self._update_status("Connecting to CCTV...")
+
+        thread = threading.Thread(target=self._cctv_thread, args=(url,))
+        thread.daemon = True
+        thread.start()
+
+    def _cctv_thread(self, url):
+        """CCTV detection thread with full pipeline."""
+        try:
+            import sys
+            sys.path.insert(0, os.path.dirname(__file__))
+            from detect_with_tracking import VehicleDetectionPipeline, load_config
+
+            config = load_config()
+            config["model"]["confidence_threshold"] = self.conf_threshold.get()
+
+            self._update_info(f"Connecting to:\n{url}\n\nLoading pipeline...")
+
+            pipeline = VehicleDetectionPipeline(config, model_path=self.model_path.get())
+
+            cap = cv2.VideoCapture(url)
+            if not cap.isOpened():
+                self._update_status("Error: Cannot connect to CCTV")
+                self._update_info("Gagal koneksi ke CCTV.\nPastikan URL benar dan CCTV menyala.")
+                return
+
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps_src = cap.get(cv2.CAP_PROP_FPS) or 30
+
+            self._update_info(f"Connected!\nResolusi: {width}x{height}\nFPS: {fps_src}\n\nProcessing...")
+
+            fps_history = []
+            frame_count = 0
+
+            while self.is_processing:
+                ret, frame = cap.read()
+                if not ret:
+                    self._update_info("Stream terputus. Mencoba ulang...")
+                    time.sleep(1)
+                    cap.release()
+                    cap = cv2.VideoCapture(url)
+                    continue
+
+                frame_count += 1
+                result_frame, stats = pipeline.process_frame(frame)
+
+                fps_history.append(stats["fps"])
+                avg_fps = sum(fps_history[-30:]) / min(len(fps_history), 30)
+
+                self._display_cv_image(result_frame)
+                self.fps_label.config(text=f"FPS: {avg_fps:.1f}")
+
+                if frame_count % 30 == 0:
+                    info = f"CCTV Active\n"
+                    info += f"Frame: {frame_count}\n"
+                    info += f"FPS: {avg_fps:.1f}\n\n"
+                    info += f"Detected: {stats['total_detections']}\n"
+                    info += f"After ROI: {stats['after_roi']}\n"
+                    info += f"Tracked: {stats['tracked']}\n"
+                    info += f"Counted: {stats['counted']}"
+                    self._update_info(info)
+
+            cap.release()
+            self._update_status("CCTV stopped")
+
+        except Exception as e:
+            self._update_status(f"Error: {str(e)}")
+            self._update_info(f"Error:\n{str(e)}")
+
+        finally:
+            self.is_processing = False
+            self.detect_btn.config(state=tk.NORMAL)
+            self.cctv_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
 
 
 def main():

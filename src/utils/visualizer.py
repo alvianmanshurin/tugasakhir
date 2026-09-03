@@ -64,34 +64,28 @@ class Visualizer:
 
         return result
 
-    def draw_counting_line(self, frame, line_position):
-        """Draw the counting line on the frame."""
+    def draw_counting_lines(self, frame, line1_position, line2_position):
+        """Draw dual counting lines on the frame."""
         h, w = frame.shape[:2]
-        line_y = int(h * line_position)
-
-        # Draw dashed line
-        dash_len = 20
-        for x in range(0, w, dash_len * 2):
-            cv2.line(
-                frame,
-                (x, line_y),
-                (min(x + dash_len, w), line_y),
-                (0, 255, 255),
-                2,
-            )
-
-        # Draw label
-        cv2.putText(
-            frame,
-            "COUNTING LINE",
-            (10, line_y - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
-
+        
+        # Line 1 (atas) - biru
+        line1_y = int(h * line1_position)
+        for x in range(0, w, 40):
+            cv2.line(frame, (x, line1_y), (min(x + 20, w), line1_y), (255, 100, 0), 2)
+        cv2.putText(frame, "GARIS 1", (10, line1_y - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 0), 1)
+        
+        # Line 2 (bawah) - kuning
+        line2_y = int(h * line2_position)
+        for x in range(0, w, 40):
+            cv2.line(frame, (x, line2_y), (min(x + 20, w), line2_y), (0, 255, 255), 2)
+        cv2.putText(frame, "GARIS 2", (10, line2_y + 20),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        
+        # Label zone
+        cv2.putText(frame, "ZONE COUNTING", (w//2 - 60, line1_y - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
         return frame
 
     def draw_count(self, frame, counts, total):

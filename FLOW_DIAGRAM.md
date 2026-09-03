@@ -149,27 +149,31 @@
                 └────────────┬────────────┘
                              │
                              ▼
-                ┌─────────────────────────┐
-                │   LINE CROSSING COUNTER │
-                │                         │
-                │  ─────────────────────  │  ← counting line
-                │                         │
-                │  Count when track       │
-                │  crosses the line       │
-                │  in either direction    │
-                └────────────┬────────────┘
-                             │
-                             ▼
-                ┌─────────────────────────┐
-                │    DRAW RESULTS         │
-                │  - Bounding boxes       │
-                │  - Track IDs            │
-                │  - Class labels         │
-                │  - Distance tags        │
-                │  - Velocity arrows      │
-                │  - HUD (FPS, counts)    │
-                │  - ROI overlay          │
-                │  - Counting line        │
+                 ┌─────────────────────────┐
+                 │  DUAL-LINE COUNTER      │
+                 │                         │
+                 │  ═══════════════════════│  ← Line 1 (atas, biru)
+                 │                         │
+                 │  ZONE COUNTING          │
+                 │                         │
+                 │  ═══════════════════════│  ← Line 2 (bawah, kuning)
+                 │                         │
+                 │  Count when track       │
+                 │  crosses BOTH lines     │
+                 │  (above line1 AND       │
+                 │   below line2)          │
+                 └────────────┬────────────┘
+                              │
+                              ▼
+                 ┌─────────────────────────┐
+                 │    DRAW RESULTS         │
+                 │  - Bounding boxes       │
+                 │  - Track IDs            │
+                 │  - Class labels         │
+                 │  - Velocity arrows      │
+                 │  - HUD (FPS, counts)    │
+                 │  - ROI overlay          │
+                 │  - Dual counting lines  │
                 └────────────┬────────────┘
                              │
                              ▼

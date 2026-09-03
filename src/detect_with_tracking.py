@@ -100,9 +100,10 @@ class VehicleDetectionPipeline:
         self.show_track_id = track_cfg.get("show_track_id", True)
         self.show_velocity = track_cfg.get("show_velocity", False)
 
-        # Inisialisasi Penghitung Kendaraan (persilangan garis)
+        # Inisialisasi Penghitung Kendaraan (dual-line)
         self.counter = VehicleCounter(
-            line_position=count_cfg.get("line_position", 0.5),
+            line1_position=count_cfg.get("line1_position", 0.35),
+            line2_position=count_cfg.get("line2_position", 0.65),
             direction=count_cfg.get("direction", "both"),
             min_track_length=count_cfg.get("min_track_length", 5),
             max_lost_frames=count_cfg.get("max_lost_frames", 30),
@@ -213,12 +214,25 @@ class VehicleDetectionPipeline:
         if self.show_roi:
             result_frame = self.roi_filter.draw_roi(result_frame)
 
-        # Gambar garis penghitung
-        line_y = int(frame.shape[0] * self.counter.line_position)
-        cv2.line(result_frame, (0, line_y), (frame.shape[1], line_y),
-                (0, 255, 255), 2)
-        cv2.putText(result_frame, "GARIS HITUNG", (10, line_y - 10),
+        # Gambar 2 garis penghitung (dual-line)
+        h = frame.shape[0]
+        w = frame.shape[1]
+        
+        # Garis 1 (atas) - biru
+        line1_y = int(h * self.counter.line1_position)
+        cv2.line(result_frame, (0, line1_y), (w, line1_y), (255, 100, 0), 2)
+        cv2.putText(result_frame, "GARIS 1", (10, line1_y - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 0), 1)
+        
+        # Garis 2 (bawah) - kuning
+        line2_y = int(h * self.counter.line2_position)
+        cv2.line(result_frame, (0, line2_y), (w, line2_y), (0, 255, 255), 2)
+        cv2.putText(result_frame, "GARIS 2", (10, line2_y + 20),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        
+        # Label area
+        cv2.putText(result_frame, "ZONE COUNTING", (w//2 - 60, line1_y - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         # Gambar objek yang dilacak
         for t in tracked:
