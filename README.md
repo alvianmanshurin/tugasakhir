@@ -21,6 +21,8 @@ Sistem deteksi dan penghitungan kendaraan secara otomatis menggunakan YOLOv11 un
 
 ## Konfigurasi yang Digunakan
 
+### Model & Training
+
 | Parameter | Nilai | Keterangan |
 |-----------|-------|------------|
 | Model | YOLOv11n (Nano) | 2.6M params, tercepat untuk CPU |
@@ -28,6 +30,32 @@ Sistem deteksi dan penghitungan kendaraan secara otomatis menggunakan YOLOv11 un
 | Batch Size | 4 | Hemat RAM |
 | Device | CPU | Tidak ada CUDA |
 | Epochs | 50 | ~25-30 menit |
+| Optimizer | SGD | Hemat memori dari Adam |
+
+### Augmentasi (Optimized untuk Vehicle Counting)
+
+| Kategori | Parameter | Nilai | Keterangan |
+|----------|-----------|-------|------------|
+| **Flip** | `fliplr` | 0.5 | Flip horizontal 50% |
+| | `flipud` | 0.0 | Flip vertikal MATI |
+| **Mosaic** | `mosaic` | 1.0 | Gabung 4 gambar |
+| | `close_mosaic` | 10 | Nonaktif di epoch terakhir |
+| **Color/HSV** | `hsv_h` | 0.015 | Hue shift |
+| | `hsv_s` | 0.7 | Saturasi |
+| | `hsv_v` | 0.4 | Brightness (untuk CCTV) |
+| **Geometri** | `degrees` | 0.0 | Rotasi MATI (kamera fixed) |
+| | `translate` | 0.1 | Translasi 10% |
+| | `scale` | 0.5 | Scale 50-150% |
+| | `shear` | 5.0 | Shear ±5° (sudut kamera) |
+| | `perspective` | 0.001 | Distorsi kamera ringan |
+| **Kualitas** | `blur` | 0.01 | Blur 1% (kamera goyang) |
+| | `erasing` | **0.0** | **DIMATIKAN** (counting) |
+| | `grayscale` | 0.1 | Grayscale 10% |
+| **Matikan** | `mixup` | 0.0 | Ganggu bounding box |
+| | `copy_paste` | 0.0 | Duplikasi kendaraan |
+| | `crop_fraction` | 1.0 | Full crop |
+
+> **Catatan:** `erasing` dimatikan untuk menjaga integritas bounding box pada objek kendaraan besar (bus/truk).
 
 ---
 
@@ -36,17 +64,23 @@ Sistem deteksi dan penghitungan kendaraan secara otomatis menggunakan YOLOv11 un
 ```
 tugasakhir/
 ├── config/
-│   ├── config.yaml              # Konfigurasi proyek
+│   ├── config.yaml              # Konfigurasi proyek + augmentasi
 │   └── predefined_classes.txt   # Daftar kelas untuk LabelImg
 ├── data/
 │   ├── dataset.yaml             # Konfigurasi dataset YOLO
 │   ├── raw/                     # Gambar mentah
 │   └── annotated/               # Dataset train/val
+│       ├── images/
+│       │   ├── train/           # 80% data training
+│       │   └── val/             # 20% data validasi
+│       └── labels/
+│           ├── train/           # Label training (YOLO format)
+│           └── val/             # Label validasi
 ├── src/
-│   ├── train.py                 # Training (CPU optimized)
+│   ├── train.py                 # Training (CPU optimized + augmentasi)
 │   ├── detect.py                # Deteksi ringan
 │   ├── evaluate.py              # Evaluasi model
-│   ├── realtime.py              # Real-time webcam
+│   ├── realtime.py              # Real-time webcam/video
 │   ├── gui_app.py               # GUI application
 │   ├── comparison.py            # YOLO vs Manual
 │   ├── batch_process.py         # Batch processing
@@ -56,11 +90,52 @@ tugasakhir/
 │   ├── export_model.py          # Export model
 │   └── monitor.py               # Training monitor
 ├── models/                      # Model tersimpan
+│   └── vehicle_detection/
+│       └── weights/
+│           ├── best.pt          # Model terbaik
+│           └── last.pt          # Model terakhir
 ├── outputs/                     # Hasil deteksi
 ├── quick_start.py               # Setup cepat
 ├── setup_labelimg.py            # Setup LabelImg
 ├── requirements.txt             # Dependensi
 └── README.md
+```
+
+---
+
+## Dataset
+
+### Kelas Kendaraan
+
+| ID | Kelas | Deskripsi |
+|----|-------|-----------|
+| 0 | `motor` | Sepeda motor (semua jenis) |
+| 1 | `mobil` | Mobil penumpang |
+| 2 | `bus` | Bus |
+| 3 | `truk` | Truk |
+
+### Format Anotasi (YOLO)
+
+```
+<class_id> <center_x> <center_y> <width> <height>
+```
+
+Contoh:
+```
+0 0.512 0.345 0.089 0.156
+1 0.234 0.678 0.123 0.234
+```
+
+### Struktur Dataset
+
+```
+data/annotated/
+├── images/
+│   ├── train/     # 80% gambar training
+│   └── val/       # 20% gambar validasi
+└── labels/
+    ├── train/     # Label training (.txt)
+    └── val/       # Label validasi (.txt)
 ```
 
 ---
@@ -208,16 +283,68 @@ python src/export_model.py --action export --format onnx tflite
 
 ---
 
+## Pipeline Sistem
+
+```
+Video/Webcam → Frame Extraction → Preprocessing → YOLOv11 Detection → ROI Filter
+                                                                          ↓
+                                              Counting ← Tracking ← Bounding Box
+```
+
+### Komponen Utama
+
+| Komponen | Deskripsi |
+|----------|-----------|
+| **Input** | Video file (.MOV, .MP4) atau Webcam/RTSP |
+| **Preprocessing** | Resize 416x416, augmentasi saat training |
+| **Detection** | YOLOv11n dengan confidence threshold 0.5 |
+| **ROI Filter** | Region of Interest (trapezoid) |
+| **Tracking** | ByteTrack-inspired multi-object tracking |
+| **Counting** | Dual-line crossing detection |
+
+### ROI Configuration
+
+```
+┌─────────────────────────────────┐
+│         Gerbang Masuk           │
+│    ┌───────────────────┐        │
+│    │    Line 1 (0.48)  │ ← Masuk│
+│    │                   │        │
+│    │    Line 2 (0.75)  │ ← Keluar│
+│    └───────────────────┘        │
+└─────────────────────────────────┘
+```
+
+| Parameter | Nilai | Keterangan |
+|-----------|-------|------------|
+| `line1_position` | 0.48 | Garis atas (masuk) |
+| `line2_position` | 0.75 | Garis bawah (keluar) |
+| `direction` | both | Hitung arah masuk & keluar |
+| `min_track_length` | 3 | Frame minimum sebelum dihitung |
+
+---
+
 ## Metrik Evaluasi
 
-| Metrik | Deskripsi |
-|--------|-----------|
-| **Precision** | Proporsi deteksi benar |
-| **Recall** | Proporsi objek terdeteksi |
-| **F1-Score** | Harmonic mean Precision dan Recall |
-| **mAP50** | Mean Average Precision (IoU=0.5) |
-| **mAP50-95** | Mean Average Precision (IoU 0.5-0.95) |
-| **FPS** | Frames Per Second |
+| Metrik | Deskripsi | Target |
+|--------|-----------|--------|
+| **Precision** | Proporsi deteksi benar | > 0.7 |
+| **Recall** | Proporsi objek terdeteksi | > 0.7 |
+| **F1-Score** | Harmonic mean Precision dan Recall | > 0.7 |
+| **mAP50** | Mean Average Precision (IoU=0.5) | > 0.75 |
+| **mAP50-95** | Mean Average Precision (IoU 0.5-0.95) | > 0.5 |
+| **FPS** | Frames Per Second | > 5 |
+
+### Hasil Training (Sebelum Optimasi Augmentasi)
+
+| Kelas | Precision | Recall | mAP50 | mAP50-95 |
+|-------|-----------|--------|-------|----------|
+| motor | 0.689 | 0.817 | 0.808 | 0.551 |
+| mobil | 0.780 | 0.854 | 0.895 | 0.674 |
+| bus | 0.418 | 0.602 | 0.542 | 0.420 |
+| truk | 0.614 | 0.708 | 0.659 | 0.547 |
+
+> **Catatan:** Hasil di atas menggunakan augmentasi default. Setelah optimasi augmentasi (erasing dimatikan, shear/blur/ditambahkan), diharapkan peningkatan pada kelas bus dan truk.
 
 ---
 
@@ -230,6 +357,28 @@ python src/export_model.py --action export --format onnx tflite
 5. Gunakan `--quick` untuk testing
 6. Webcam berjalan di ~5-8 FPS
 7. Gunakan GPU jika tersedia (upgrade driver)
+8. **Augmentasi sudah dioptimasi** untuk vehicle counting (erasing dimatikan)
+
+---
+
+## Changelog
+
+### v1.1.0 - Augmentasi Optimization (17 Sep 2026)
+
+- **Fixed:** Matikan random erasing (`erasing: 0.0`) untuk menjaga integritas bounding box
+- **Added:** Shear augmentation (`±5°`) untuk simulasi sudut pandang kamera
+- **Added:** Blur augmentation (`1%`) untuk robustness kamera goyang
+- **Added:** Grayscale augmentation (`10%`) untuk robustness minim cahaya
+- **Added:** Perspective (`0.001`) untuk distorsi kamera ringan
+- **Updated:** Semua augmentasi parameters di-pass dari config.yaml ke model.train()
+
+### v1.0.0 - Initial Release
+
+- YOLOv11n training (50 epochs, mAP50: 72.6%)
+- Dual-line counting system
+- GUI application with CCTV/RTSP support
+- ROI filter + Object tracking pipeline
+- TorchScript model export
 
 ---
 
