@@ -4,6 +4,7 @@
 path: D:/KULIAH/Tugas Akhir/tugasakhir/data/annotated
 train: images/train
 val: images/val
+test: images/test
 
 # Classes
 nc: 4

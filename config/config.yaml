@@ -47,6 +47,39 @@ training:
   cache: false  # Disable caching untuk hemat RAM
   verbose: true
 
+# Augmentasi Configuration - OPTIMIZED FOR VEHICLE COUNTING
+# Fokus: Meningkatkan deteksi bus/truk + menjaga akurasi counting
+augmentation:
+  # === FLIP ===
+  fliplr: 0.5           # Flip horizontal 50% (aman untuk kendaraan)
+  flipud: 0.0           # Flip vertikal MATI (kendaraan tidak terbalik)
+
+  # === MOSAIC ===
+  mosaic: 1.0           # Mosaic augmentasi (gabung 4 gambar)
+  # close_mosaic sudah di training section (= 10)
+
+  # === COLOR / HSV ===
+  hsv_h: 0.015          # Hue shift (0-1)
+  hsv_s: 0.7            # Saturation (0-1)
+  hsv_v: 0.4            # Brightness (0-1) - penting untuk CCTV
+
+  # === GEOMETRI ===
+  degrees: 0.0          # Rotasi MATI (kamera fixed di gerbang)
+  translate: 0.1        # Translasi 10%
+  scale: 0.5            # Scale 50-150% (variasi ukuran motor->truk)
+  shear: 5.0            # Shear ±5° (simulasi sudut pandang kamera)
+  perspective: 0.001    # Perspektif ringan (distorsi kamera)
+
+  # === KUALITAS ===
+  blur: 0.01            # Blur 1% (simulasi kamera goyang ringan)
+  erasing: 0.0          # Random Erasing MATI (jangan hapus bagian kendaraan!)
+  grayscale: 0.1        # Grayscale 10% (robustness minim cahaya)
+
+  # === MATIKAN (berbahaya untuk counting) ===
+  mixup: 0.0            # MixUp MATI (ganggu bounding box)
+  copy_paste: 0.0       # Copy-Paste MATI (bisa duplikasi kendaraan)
+  crop_fraction: 1.0    # Full crop (jangan potong)
+
 # Dataset Configuration
 dataset:
   yaml_path: "D:/KULIAH/Tugas Akhir/tugasakhir/data/dataset.yaml"

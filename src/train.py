@@ -120,6 +120,17 @@ def train_model(config):
     total_est = est_time_per_epoch * cfg['epochs'] / 60
     print(f"[INFO] Estimasi waktu training: ~{total_est:.0f} menit")
 
+    # Muat augmentasi dari config
+    aug_cfg = config.get("augmentation", {})
+    print(f"\n[AUGMENTASI]")
+    print(f"  Flip horizontal: {aug_cfg.get('fliplr', 0.5)}")
+    print(f"  Mosaic: {aug_cfg.get('mosaic', 1.0)}")
+    print(f"  HSV Brightness: {aug_cfg.get('hsv_v', 0.4)}")
+    print(f"  Shear: {aug_cfg.get('shear', 5.0)}")
+    print(f"  Blur: {aug_cfg.get('blur', 0.01)}")
+    print(f"  Grayscale: {aug_cfg.get('grayscale', 0.1)}")
+    print(f"  Erasing: {aug_cfg.get('erasing', 0.0)} ← DIMATIKAN untuk counting")
+
     # Mulai training
     print("\n[INFO] Memulai training...")
     start_time = time.time()
@@ -150,6 +161,24 @@ def train_model(config):
         project="models",
         name="vehicle_detection",
         exist_ok=True,
+        # === AUGMENTASI PARAMETERS ===
+        fliplr=aug_cfg.get("fliplr", 0.5),
+        flipud=aug_cfg.get("flipud", 0.0),
+        mosaic=aug_cfg.get("mosaic", 1.0),
+        hsv_h=aug_cfg.get("hsv_h", 0.015),
+        hsv_s=aug_cfg.get("hsv_s", 0.7),
+        hsv_v=aug_cfg.get("hsv_v", 0.4),
+        degrees=aug_cfg.get("degrees", 0.0),
+        translate=aug_cfg.get("translate", 0.1),
+        scale=aug_cfg.get("scale", 0.5),
+        shear=aug_cfg.get("shear", 5.0),
+        perspective=aug_cfg.get("perspective", 0.001),
+        blur=aug_cfg.get("blur", 0.01),
+        erasing=aug_cfg.get("erasing", 0.0),
+        grayscale=aug_cfg.get("grayscale", 0.1),
+        mixup=aug_cfg.get("mixup", 0.0),
+        copy_paste=aug_cfg.get("copy_paste", 0.0),
+        crop_fraction=aug_cfg.get("crop_fraction", 1.0),
     )
 
     elapsed = time.time() - start_time
@@ -166,6 +195,7 @@ def train_model(config):
 def quick_train(config):
     """
     Training cepat dengan epoch minimal untuk pengujian.
+    Menggunakan augmentasi yang sama dengan training penuh.
     
     Args:
         config: dict konfigurasi
@@ -174,6 +204,7 @@ def quick_train(config):
         Hasil training
     """
     print("\n[INFO] MODE TRAINING CEPAT (10 epochs)")
+    print("[INFO] Augmentasi: Menggunakan konfigurasi yang sama dengan training penuh")
     cfg = config["training"]
     cfg["epochs"] = 10
     cfg["patience"] = 5
@@ -183,6 +214,7 @@ def quick_train(config):
 def resume_training(config, last_model):
     """
     Melanjutkan training dari checkpoint terakhir.
+    Menggunakan augmentasi yang sama dengan training penuh.
     
     Args:
         config: dict konfigurasi
@@ -192,18 +224,41 @@ def resume_training(config, last_model):
         Hasil training
     """
     print(f"\n[INFO] Melanjutkan training dari: {last_model}")
+    print("[INFO] Augmentasi: Menggunakan konfigurasi yang sama dengan training penuh")
+
+    # Muat augmentasi dari config
+    aug_cfg = config.get("augmentation", {})
+    cfg = config["training"]
 
     model = YOLO(last_model)
     results = model.train(
         data=config["dataset"]["yaml_path"],
-        epochs=config["training"]["epochs"],
-        imgsz=config["training"]["image_size"],
+        epochs=cfg["epochs"],
+        imgsz=cfg["image_size"],
         batch=4,
         device="cpu",
         amp=False,
         project="models",
         name="vehicle_detection",
         exist_ok=True,
+        # === AUGMENTASI PARAMETERS (sama dengan train_model) ===
+        fliplr=aug_cfg.get("fliplr", 0.5),
+        flipud=aug_cfg.get("flipud", 0.0),
+        mosaic=aug_cfg.get("mosaic", 1.0),
+        hsv_h=aug_cfg.get("hsv_h", 0.015),
+        hsv_s=aug_cfg.get("hsv_s", 0.7),
+        hsv_v=aug_cfg.get("hsv_v", 0.4),
+        degrees=aug_cfg.get("degrees", 0.0),
+        translate=aug_cfg.get("translate", 0.1),
+        scale=aug_cfg.get("scale", 0.5),
+        shear=aug_cfg.get("shear", 5.0),
+        perspective=aug_cfg.get("perspective", 0.001),
+        blur=aug_cfg.get("blur", 0.01),
+        erasing=aug_cfg.get("erasing", 0.0),
+        grayscale=aug_cfg.get("grayscale", 0.1),
+        mixup=aug_cfg.get("mixup", 0.0),
+        copy_paste=aug_cfg.get("copy_paste", 0.0),
+        crop_fraction=aug_cfg.get("crop_fraction", 1.0),
     )
     return results
 

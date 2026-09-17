@@ -18,6 +18,7 @@ from ultralytics import YOLO
 from utils.roi_filter import ROIFilter, ROIConfig, ROIBoundary
 from utils.tracker import ObjectTracker
 from utils.counter import VehicleCounter
+from utils.database import DetectionDatabase
 
 
 def load_config(config_path="config/config.yaml"):
@@ -113,6 +114,11 @@ class VehicleDetectionPipeline:
         self.fps_history = []
         self.total_detections = 0
         self.total_filtered = 0
+        
+        # Database untuk menyimpan hasil deteksi
+        self.db = DetectionDatabase()
+        self.session_id = None
+        self.frame_count = 0
 
     def process_frame(self, frame: np.ndarray) -> tuple:
         """
@@ -200,6 +206,22 @@ class VehicleDetectionPipeline:
             for t in tracked
         ]
         self.counter.update(counter_input, frame.shape[0])
+        
+        # Simpan deteksi ke database
+        self.frame_count += 1
+        if self.session_id:
+            for t in tracked:
+                self.db.save_detection(
+                    session_id=self.session_id,
+                    vehicle_id=f"track_{t['track_id']}",
+                    class_id=t["class_id"],
+                    class_name=t["class_name"],
+                    confidence=t["confidence"],
+                    bbox=t["bbox"],
+                    frame_number=self.frame_count,
+                    timestamp=time.time(),
+                    counted=t["track_id"] in self.counter.counted_ids,
+                )
 
         # Hitung FPS
         inference_time = time.time() - start
@@ -363,7 +385,16 @@ class VehicleDetectionPipeline:
         self.counter.reset()
         self.tracker.reset()
         self.fps_history = []
+        self.frame_count = 0
         frame_count = 0
+        
+        # Mulai sesi database
+        source_name = Path(source).stem if not is_webcam else "webcam"
+        self.session_id = self.db.start_session(
+            session_name=f"{source_name}_{int(time.time())}",
+            source_type="webcam" if is_webcam else "video",
+            source_path=str(source),
+        )
 
         # Loop utama pemrosesan video
         while True:
@@ -400,6 +431,35 @@ class VehicleDetectionPipeline:
             writer.release()
         if show:
             cv2.destroyAllWindows()
+        
+        # Simpan ringkasan ke database
+        if self.session_id:
+            self.db.end_session(
+                session_id=self.session_id,
+                total_frames=frame_count,
+                total_detections=self.total_detections,
+                total_counted=self.counter.total_count,
+                avg_fps=float(np.mean(self.fps_history)),
+            )
+            self.db.save_counting_summary(
+                session_id=self.session_id,
+                class_counts=dict(self.counter.class_counts),
+                direction_counts={
+                    "up": dict(self.counter.counts_up),
+                    "down": dict(self.counter.counts_down),
+                },
+            )
+            # Akumulasi jumlah kendaraan per kelas
+            self.db.accumulate_vehicles_batch(
+                session_id=self.session_id,
+                class_counts=dict(self.counter.class_counts),
+                direction_counts={
+                    "up": dict(self.counter.counts_up),
+                    "down": dict(self.counter.counts_down),
+                },
+            )
+            print(f"  Database: session #{self.session_id} saved")
+            print(f"  Akumulasi: {dict(self.counter.class_counts)}")
 
         print(f"\n{'='*60}")
         print(f"PEMBERPROSESAN SELESAI")
