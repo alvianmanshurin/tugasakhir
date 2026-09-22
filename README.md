@@ -387,7 +387,7 @@ Video/Webcam → Frame Extraction → Preprocessing → YOLOv11 Detection → RO
 - [YOLOv11 Documentation](https://docs.ultralytics.com/)
 - [OpenCV Documentation](https://docs.opencv.org/)
 - [LabelImg GitHub](https://github.com/heartexlabs/labelImg)
-- Dataset: Gerbang masuk Kampus ITERA
+- Dataset: https://drive.google.com/drive/folders/1_uWlyPXIavfucFLPfNK_IU2iH3sDI8xu?usp=sharing
 
 ---
 
