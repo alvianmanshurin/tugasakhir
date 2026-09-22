@@ -1,56 +1,81 @@
+"""
+Script untuk merge dan split dataset
+"""
 import os
-import shutil
 import random
+import shutil
 from pathlib import Path
 
-# Source directories
-raw_dir = Path("C:/Users/Alvian/OneDrive/Dokumen/GitHub/tugasakhir/data/raw")
-merged_dir = raw_dir / "merged"
-merged_dir.mkdir(exist_ok=True)
+def merge_datasets(source_dirs, output_dir):
+    """Merge beberapa dataset menjadi satu"""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    images_dir = output_dir / "images"
+    labels_dir = output_dir / "labels"
+    images_dir.mkdir(exist_ok=True)
+    labels_dir.mkdir(exist_ok=True)
+    
+    total_images = 0
+    
+    for source_dir in source_dirs:
+        source = Path(source_dir)
+        img_dir = source / "images"
+        lbl_dir = source / "labels"
+        
+        if not img_dir.exists():
+            print(f"Warning: {img_dir} tidak ditemukan")
+            continue
+        
+        for img_file in img_dir.glob("*.jpg"):
+            shutil.copy2(img_file, images_dir / img_file.name)
+            lbl_file = lbl_dir / (img_file.stem + ".txt")
+            if lbl_file.exists():
+                shutil.copy2(lbl_file, labels_dir / lbl_file.name)
+            total_images += 1
+    
+    print(f"Total gambar yang di-merge: {total_images}")
+    return total_images
 
-# Merge all frames
-count = 0
-for subdir in ["KIRI-7", "KIRI-9", "TENGAH-7", "TENGAH-9"]:
-    src = raw_dir / subdir
-    if src.exists():
-        files = list(src.glob("*.jpg"))
-        for f in files:
-            dst = merged_dir / f"merged_{count:05d}.jpg"
-            shutil.copy2(f, dst)
-            count += 1
-        print(f"Merged {len(files)} frames from {subdir}")
+def split_dataset(source_dir, output_dir, train_ratio=0.8):
+    """Split dataset menjadi train/val"""
+    source = Path(source_dir)
+    output = Path(output_dir)
+    
+    images_dir = source / "images"
+    labels_dir = source / "labels"
+    
+    images = list(images_dir.glob("*.jpg"))
+    random.shuffle(images)
+    
+    split_idx = int(len(images) * train_ratio)
+    train_images = images[:split_idx]
+    val_images = images[split_idx:]
+    
+    # Create directories
+    for split in ["train", "val"]:
+        (output / "images" / split).mkdir(parents=True, exist_ok=True)
+        (output / "labels" / split).mkdir(parents=True, exist_ok=True)
+    
+    # Copy files
+    for img_file in train_images:
+        shutil.copy2(img_file, output / "images" / "train" / img_file.name)
+        lbl_file = labels_dir / (img_file.stem + ".txt")
+        if lbl_file.exists():
+            shutil.copy2(lbl_file, output / "labels" / "train" / lbl_file.name)
+    
+    for img_file in val_images:
+        shutil.copy2(img_file, output / "images" / "val" / img_file.name)
+        lbl_file = labels_dir / (img_file.stem + ".txt")
+        if lbl_file.exists():
+            shutil.copy2(lbl_file, output / "labels" / "val" / lbl_file.name)
+    
+    print(f"Train: {len(train_images)} gambar")
+    print(f"Val: {len(val_images)} gambar")
 
-print(f"Total merged: {count} frames")
+def main():
+    print("=== MERGE & SPLIT DATASET ===")
+    # Tambahkan kode sesuai kebutuhan
 
-# Split to train/val
-images = list(merged_dir.glob("*.jpg"))
-random.shuffle(images)
-
-train_ratio = 0.8
-split_idx = int(len(images) * train_ratio)
-
-train_files = images[:split_idx]
-val_files = images[split_idx:]
-
-# Create directories
-train_img = Path("C:/Users/Alvian/OneDrive/Dokumen/GitHub/tugasakhir/data/annotated/images/train")
-val_img = Path("C:/Users/Alvian/OneDrive/Dokumen/GitHub/tugasakhir/data/annotated/images/val")
-train_lbl = Path("C:/Users/Alvian/OneDrive/Dokumen/GitHub/tugasakhir/data/annotated/labels/train")
-val_lbl = Path("C:/Users/Alvian/OneDrive/Dokumen/GitHub/tugasakhir/data/annotated/labels/val")
-
-for d in [train_img, val_img, train_lbl, val_lbl]:
-    d.mkdir(parents=True, exist_ok=True)
-
-# Copy train
-for f in train_files:
-    shutil.copy2(f, train_img / f.name)
-    (train_lbl / (f.stem + ".txt")).touch()
-
-# Copy val
-for f in val_files:
-    shutil.copy2(f, val_img / f.name)
-    (val_lbl / (f.stem + ".txt")).touch()
-
-print(f"Train: {len(train_files)} images")
-print(f"Val: {len(val_files)} images")
-print("Done!")
+if __name__ == "__main__":
+    main()

@@ -1,158 +1,65 @@
-"""Training Monitor - Real-time training progress display
-Optimized for low-end laptop
 """
-
-import os
-import json
+Script monitoring real-time
+"""
+import cv2
 import time
-from pathlib import Path
-from datetime import datetime
+import sys
+sys.path.insert(0, 'src')
+from ultralytics import YOLO
 
-
-class TrainingMonitor:
-    """Monitor training progress from log files."""
-
-    def __init__(self, log_dir="models/vehicle_detection"):
-        self.log_dir = Path(log_dir)
-        self.results_file = self.log_dir / "results.csv"
-
-    def watch(self, refresh=5):
-        """Watch training progress in real-time."""
-        print("=" * 60)
-        print("TRAINING MONITOR")
-        print("Press Ctrl+C to stop")
-        print("=" * 60)
-
-        if not self.results_file.exists():
-            print(f"\n[INFO] Waiting for training to start...")
-            print(f"[INFO] Looking for: {self.results_file}")
-
-            while not self.results_file.exists():
-                time.sleep(2)
-
-            print("[INFO] Training started!")
-
-        last_line = 0
-        try:
-            while True:
-                if self.results_file.exists():
-                    with open(self.results_file, "r") as f:
-                        lines = f.readlines()
-
-                    if len(lines) > last_line:
-                        # Clear screen
-                        os.system('cls' if os.name == 'nt' else 'clear')
-
-                        print("=" * 60)
-                        print("TRAINING MONITOR - UPT K3L ITERA")
-                        print(f"Updated: {datetime.now().strftime('%H:%M:%S')}")
-                        print("=" * 60)
-
-                        # Parse and display latest results
-                        for line in lines[last_line:]:
-                            if line.strip() and not line.startswith("epoch"):
-                                parts = line.strip().split(",")
-                                if len(parts) >= 8:
-                                    try:
-                                        epoch = parts[0].strip()
-                                        box_loss = parts[1].strip()
-                                        cls_loss = parts[2].strip()
-                                        dfl_loss = parts[3].strip()
-                                        mAP50 = parts[5].strip()
-                                        mAP5095 = parts[6].strip()
-
-                                        print(f"\nEpoch: {epoch}")
-                                        print(f"  Box Loss:    {box_loss}")
-                                        print(f"  Cls Loss:    {cls_loss}")
-                                        print(f"  DFL Loss:    {dfl_loss}")
-                                        print(f"  mAP50:       {mAP50}")
-                                        print(f"  mAP50-95:    {mAP5095}")
-                                    except:
-                                        pass
-
-                        last_line = len(lines)
-
-                        # Progress bar
-                        print("\n" + "-" * 60)
-                        print("Watching for updates... (Ctrl+C to stop)")
-
-                time.sleep(refresh)
-
-        except KeyboardInterrupt:
-            print("\n\n[INFO] Monitor stopped.")
-
-    def show_summary(self):
-        """Show training summary."""
-        if not self.results_file.exists():
-            print("[ERROR] No training results found.")
-            return
-
-        with open(self.results_file, "r") as f:
-            lines = f.readlines()
-
-        if len(lines) < 2:
-            print("[INFO] No training data yet.")
-            return
-
-        print("=" * 60)
-        print("TRAINING SUMMARY")
-        print("=" * 60)
-
-        # Parse all results
-        results = []
-        for line in lines[1:]:
-            if line.strip():
-                parts = line.strip().split(",")
-                if len(parts) >= 7:
-                    results.append({
-                        "epoch": int(parts[0]),
-                        "box_loss": float(parts[1]),
-                        "cls_loss": float(parts[2]),
-                        "dfl_loss": float(parts[3]),
-                        "mAP50": float(parts[5]),
-                        "mAP5095": float(parts[6]),
-                    })
-
-        if not results:
-            print("[INFO] No valid results found.")
-            return
-
-        # Find best
-        best = max(results, key=lambda x: x["mAP50"])
-        latest = results[-1]
-
-        print(f"\nTotal epochs completed: {len(results)}")
-        print(f"\nLatest (Epoch {latest['epoch']}):")
-        print(f"  mAP50:       {latest['mAP50']:.4f}")
-        print(f"  mAP50-95:    {latest['mAP5095']:.4f}")
-
-        print(f"\nBest (Epoch {best['epoch']}):")
-        print(f"  mAP50:       {best['mAP50']:.4f}")
-        print(f"  mAP50-95:    {best['mAP5095']:.4f}")
-
-        print(f"\nTraining history:")
-        print(f"  {'Epoch':<8} {'mAP50':<12} {'mAP50-95':<12}")
-        print(f"  {'-'*32}")
-        for r in results[::max(1, len(results)//10)]:  # Show ~10 samples
-            print(f"  {r['epoch']:<8} {r['mAP50']:<12.4f} {r['mAP5095']:<12.4f}")
-
+def monitor_webcam():
+    """Monitor webcam secara real-time"""
+    model = YOLO('models/yolov8n_vehicle/weights/best.pt')
+    CLASS_NAMES = {0: 'motor', 1: 'mobil', 2: 'bus', 3: 'truk'}
+    COLORS = {'motor': (255, 0, 0), 'mobil': (0, 255, 0), 'bus': (0, 0, 255), 'truk': (255, 255, 0)}
+    
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Tidak dapat membuka webcam")
+        return
+    
+    print("Tekan 'q' untuk keluar")
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        start = time.time()
+        results = model(frame, conf=0.35, iou=0.45, verbose=False)
+        fps = 1.0 / (time.time() - start)
+        
+        counts = {}
+        for r in results:
+            if r.boxes is not None:
+                for box in r.boxes:
+                    cls_id = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    xyxy = box.xyxy[0].tolist()
+                    if cls_id in CLASS_NAMES:
+                        cls_name = CLASS_NAMES[cls_id]
+                        counts[cls_name] = counts.get(cls_name, 0) + 1
+                        x1, y1, x2, y2 = [int(c) for c in xyxy]
+                        color = COLORS[cls_name]
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                        label = f'{cls_name} {conf:.2f}'
+                        cv2.putText(frame, label, (x1, y1 - 10),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        
+        cv2.putText(frame, f'FPS: {fps:.1f}', (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        cv2.imshow('Monitoring', frame)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    
+    cap.release()
+    cv2.destroyAllWindows()
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="Training Monitor")
-    parser.add_argument("--action", type=str, default="watch",
-                       choices=["watch", "summary"])
-    parser.add_argument("--log-dir", type=str, default="models/vehicle_detection")
-    parser.add_argument("--refresh", type=int, default=5)
-    args = parser.parse_args()
-
-    monitor = TrainingMonitor(args.log_dir)
-
-    if args.action == "watch":
-        monitor.watch(args.refresh)
-    else:
-        monitor.show_summary()
-
+    print("=== MONITORING REAL-TIME ===")
+    monitor_webcam()
 
 if __name__ == "__main__":
     main()

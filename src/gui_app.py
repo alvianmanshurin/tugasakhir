@@ -1,17 +1,17 @@
-"""Simple GUI for Vehicle Detection System
-Optimized for Intel i3-1115G4, 8GB RAM
 """
-
+Aplikasi GUI untuk deteksi kendaraan
+"""
 import os
 import sys
 import yaml
 import time
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
 import threading
-import cv2
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext
 from pathlib import Path
+import cv2
 from PIL import Image, ImageTk
+from ultralytics import YOLO
 
 
 def load_config(config_path="config/config.yaml"):
@@ -20,7 +20,7 @@ def load_config(config_path="config/config.yaml"):
 
 
 class VehicleDetectionGUI:
-    """GUI Application for Vehicle Detection System."""
+    """GUI aplikasi deteksi kendaraan"""
 
     def __init__(self, root):
         self.root = root
@@ -30,12 +30,12 @@ class VehicleDetectionGUI:
 
         # Config
         self.config = load_config()
-        self.class_names = self.config.get("dataset", {}).get("names", 
+        self.class_names = self.config.get("dataset", {}).get("names",
             {0: "motor", 1: "mobil", 2: "bus", 3: "truk"})
 
         # Variables
         self.source_path = tk.StringVar()
-        self.model_path = tk.StringVar(value="D:/KULIAH/Tugas Akhir/tugasakhir/runs/detect/models/vehicle_detection/weights/best.pt")
+        self.model_path = tk.StringVar(value="models/vehicle_detection/weights/best.pt")
         self.conf_threshold = tk.DoubleVar(value=0.5)
         self.rtsp_url = tk.StringVar()
         self.is_processing = False
@@ -192,37 +192,24 @@ class VehicleDetectionGUI:
             self.model_path.set(path)
 
     def _browse_source(self):
-        """Browse source file/directory."""
+        """Browse source image/video."""
         path = filedialog.askopenfilename(
-            title="Select Image or Video",
+            title="Select Source",
             filetypes=[
-                ("Image files", "*.jpg *.jpeg *.png *.bmp"),
-                ("Video files", "*.mp4 *.avi *.mov"),
+                ("Media files", "*.jpg *.jpeg *.png *.mp4 *.avi *.mov *.mkv"),
+                ("Images", "*.jpg *.jpeg *.png"),
+                ("Videos", "*.mp4 *.avi *.mov *.mkv"),
                 ("All files", "*.*")
             ]
         )
         if path:
             self.source_path.set(path)
 
-    def _update_info(self, text):
-        """Update info text."""
-        self.info_text.delete(1.0, tk.END)
-        self.info_text.insert(tk.END, text)
-
-    def _update_results(self, text):
-        """Update results text."""
-        self.results_text.delete(1.0, tk.END)
-        self.results_text.insert(tk.END, text)
-
-    def _update_status(self, text):
-        """Update status bar."""
-        self.status_label.config(text=text)
-
     def _run_detection(self):
-        """Run detection in thread."""
+        """Run detection on selected source."""
         source = self.source_path.get()
-        if not source or not os.path.exists(source):
-            messagebox.showerror("Error", "Please select a valid source.")
+        if not source:
+            messagebox.showerror("Error", "Please select an image or video file.")
             return
 
         self.is_processing = True
@@ -237,9 +224,6 @@ class VehicleDetectionGUI:
     def _detect_thread(self, source):
         """Detection thread."""
         try:
-            from ultralytics import YOLO
-            import time
-
             # Load model
             model_path = self.model_path.get()
             self._update_info(f"Loading model:\n{model_path}\n\n")
@@ -250,15 +234,10 @@ class VehicleDetectionGUI:
             is_video = source_path.suffix.lower() in video_exts
 
             if is_video:
-                # Video file
                 self._detect_video(source, model)
-
             elif source_path.is_file():
-                # Single image
                 self._detect_image(source, model)
-
             elif source_path.is_dir():
-                # Directory
                 self._detect_directory(source, model)
 
         except Exception as e:
@@ -320,15 +299,6 @@ class VehicleDetectionGUI:
 
     def _detect_video(self, source, model):
         """Detect on video file."""
-        import sys
-        sys.path.insert(0, os.path.dirname(__file__))
-        from detect_with_tracking import VehicleDetectionPipeline, load_config
-
-        config = load_config()
-        config["model"]["confidence_threshold"] = self.conf_threshold.get()
-
-        pipeline = VehicleDetectionPipeline(config, model_path=self.model_path.get())
-
         cap = cv2.VideoCapture(source)
         if not cap.isOpened():
             self._update_status("Error: Cannot open video")
@@ -347,6 +317,7 @@ class VehicleDetectionGUI:
 
         fps_history = []
         frame_count = 0
+        counts = {name: 0 for name in self.class_names.values()}
 
         while self.is_processing:
             ret, frame = cap.read()
@@ -354,24 +325,48 @@ class VehicleDetectionGUI:
                 break
 
             frame_count += 1
-            result_frame, stats = pipeline.process_frame(frame)
+            start = time.time()
 
-            writer.write(result_frame)
-            fps_history.append(stats["fps"])
+            results = model(frame, conf=self.conf_threshold.get(),
+                          imgsz=self.config["model"]["input_size"],
+                          verbose=False)
+
+            colors = [(255,0,0), (0,255,0), (0,0,255), (255,255,0)]
+
+            for result in results:
+                if result.boxes is not None:
+                    for box in result.boxes:
+                        cls_id = int(box.cls[0])
+                        conf = float(box.conf[0])
+                        xyxy = box.xyxy[0].tolist()
+                        x1, y1, x2, y2 = [int(c) for c in xyxy]
+
+                        if cls_id < len(self.class_names):
+                            cls_name = self.class_names[cls_id]
+                            counts[cls_name] += 1
+                            color = colors[cls_id % len(colors)]
+                            cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
+                            label = f"{cls_name} {conf:.2f}"
+                            cv2.putText(frame, label, (x1, y1-10),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+            inference_time = time.time() - start
+            fps = 1/inference_time if inference_time > 0 else 0
+            fps_history.append(fps)
             avg_fps = sum(fps_history[-30:]) / min(len(fps_history), 30)
 
-            self._display_cv_image(result_frame)
+            writer.write(frame)
+            self._display_cv_image(frame)
             self.fps_label.config(text=f"FPS: {avg_fps:.1f}")
 
             if frame_count % 30 == 0:
                 progress = frame_count / total_frames * 100 if total_frames > 0 else 0
+                total = sum(counts.values())
                 info = f"Processing Video...\n"
                 info += f"Frame: {frame_count}/{total_frames}\n"
                 info += f"Progress: {progress:.1f}%\n"
                 info += f"FPS: {avg_fps:.1f}\n\n"
-                info += f"Detected: {stats['total_detections']}\n"
-                info += f"After ROI: {stats['after_roi']}\n"
-                info += f"Counted: {stats['counted']}"
+                info += f"Detected: {total}"
                 self._update_info(info)
 
         cap.release()
@@ -379,9 +374,11 @@ class VehicleDetectionGUI:
 
         result_text = f"Video Complete\n{'='*30}\n"
         result_text += f"Total Frame: {frame_count}\n"
-        result_text += f"Total Counted: {stats['counted']}\n"
         result_text += f"Avg FPS: {avg_fps:.1f}\n\n"
-        result_text += f"Output saved:\n{output_path}"
+        for name, count in counts.items():
+            if count > 0:
+                result_text += f"{name}: {count}\n"
+        result_text += f"\nOutput saved:\n{output_path}"
 
         self._update_results(result_text)
         self._update_status(f"Video complete. Output: {output_path}")
@@ -448,9 +445,6 @@ class VehicleDetectionGUI:
     def _webcam_thread(self):
         """Webcam thread."""
         try:
-            from ultralytics import YOLO
-            import time
-
             model = YOLO(self.model_path.get())
             cap = cv2.VideoCapture(0)
 
@@ -473,7 +467,6 @@ class VehicleDetectionGUI:
                               verbose=False)
                 inference_time = time.time() - start
 
-                # Draw
                 colors = [(255,0,0), (0,255,0), (0,0,255), (255,255,0)]
                 counts = {name: 0 for name in self.class_names.values()}
 
@@ -494,7 +487,6 @@ class VehicleDetectionGUI:
                                 cv2.putText(frame, label, (x1, y1-10),
                                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-                # FPS
                 fps = 1/inference_time if inference_time > 0 else 0
                 fps_history.append(fps)
                 avg_fps = sum(fps_history[-30:]) / min(len(fps_history), 30)
@@ -525,12 +517,123 @@ class VehicleDetectionGUI:
             self.webcam_btn.config(state=tk.NORMAL)
             self.stop_btn.config(state=tk.DISABLED)
 
+    def _run_cctv(self):
+        """Run CCTV/RTSP detection."""
+        url = self.rtsp_url.get()
+        if not url:
+            messagebox.showerror("Error", "Please enter RTSP URL.")
+            return
+
+        self.is_processing = True
+        self.detect_btn.config(state=tk.DISABLED)
+        self.cctv_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL)
+        self._update_status("Connecting to CCTV...")
+
+        thread = threading.Thread(target=self._cctv_thread, args=(url,))
+        thread.daemon = True
+        thread.start()
+
+    def _cctv_thread(self, url):
+        """CCTV detection thread."""
+        try:
+            model = YOLO(self.model_path.get())
+
+            self._update_info(f"Connecting to:\n{url}\n\nLoading model...")
+
+            cap = cv2.VideoCapture(url)
+            if not cap.isOpened():
+                self._update_status("Error: Cannot connect to CCTV")
+                self._update_info("Gagal koneksi ke CCTV.\nPastikan URL benar dan CCTV menyala.")
+                return
+
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps_src = cap.get(cv2.CAP_PROP_FPS) or 30
+
+            self._update_info(f"Connected!\nResolusi: {width}x{height}\nFPS: {fps_src}\n\nProcessing...")
+
+            fps_history = []
+            frame_count = 0
+
+            while self.is_processing:
+                ret, frame = cap.read()
+                if not ret:
+                    self._update_info("Stream terputus. Mencoba ulang...")
+                    time.sleep(1)
+                    cap.release()
+                    cap = cv2.VideoCapture(url)
+                    continue
+
+                frame_count += 1
+                start = time.time()
+
+                results = model(frame, conf=self.conf_threshold.get(),
+                              imgsz=self.config["model"]["input_size"],
+                              verbose=False)
+
+                colors = [(255,0,0), (0,255,0), (0,0,255), (255,255,0)]
+                counts = {name: 0 for name in self.class_names.values()}
+
+                for result in results:
+                    if result.boxes is not None:
+                        for box in result.boxes:
+                            cls_id = int(box.cls[0])
+                            conf = float(box.conf[0])
+                            xyxy = box.xyxy[0].tolist()
+                            x1, y1, x2, y2 = [int(c) for c in xyxy]
+
+                            if cls_id < len(self.class_names):
+                                cls_name = self.class_names[cls_id]
+                                counts[cls_name] += 1
+                                color = colors[cls_id % len(colors)]
+                                cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
+                                label = f"{cls_name} {conf:.2f}"
+                                cv2.putText(frame, label, (x1, y1-10),
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+                inference_time = time.time() - start
+                fps = 1/inference_time if inference_time > 0 else 0
+                fps_history.append(fps)
+                avg_fps = sum(fps_history[-30:]) / min(len(fps_history), 30)
+
+                cv2.putText(frame, f"FPS: {avg_fps:.1f}", (10, 30),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                total = sum(counts.values())
+                cv2.putText(frame, f"Vehicles: {total}", (10, 60),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+                self._display_cv_image(frame)
+                self.fps_label.config(text=f"FPS: {avg_fps:.1f}")
+
+                if frame_count % 30 == 0:
+                    info = f"CCTV Active\n"
+                    info += f"Frame: {frame_count}\n"
+                    info += f"FPS: {avg_fps:.1f}\n\n"
+                    for name, count in counts.items():
+                        if count > 0:
+                            info += f"{name}: {count}\n"
+                    self._update_info(info)
+
+            cap.release()
+            self._update_status("CCTV stopped")
+
+        except Exception as e:
+            self._update_status(f"Error: {str(e)}")
+            self._update_info(f"Error:\n{str(e)}")
+
+        finally:
+            self.is_processing = False
+            self.detect_btn.config(state=tk.NORMAL)
+            self.cctv_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+
     def _display_image(self, cv_img):
         """Display OpenCV image in label."""
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(rgb)
 
-        # Resize to fit
         display_w = self.display_label.winfo_width()
         display_h = self.display_label.winfo_height()
         if display_w > 1 and display_h > 1:
@@ -559,92 +662,23 @@ class VehicleDetectionGUI:
         self.is_processing = False
         self._update_status("Stopping...")
 
-    def _run_cctv(self):
-        """Run CCTV/RTSP detection."""
-        url = self.rtsp_url.get()
-        if not url:
-            messagebox.showerror("Error", "Please enter RTSP URL.")
-            return
+    def _update_status(self, text):
+        """Update status bar."""
+        self.root.after(0, lambda: self.status_label.config(text=text))
 
-        self.is_processing = True
-        self.detect_btn.config(state=tk.DISABLED)
-        self.cctv_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-        self._update_status("Connecting to CCTV...")
+    def _update_info(self, text):
+        """Update info text."""
+        def _update():
+            self.info_text.delete(1.0, tk.END)
+            self.info_text.insert(tk.END, text)
+        self.root.after(0, _update)
 
-        thread = threading.Thread(target=self._cctv_thread, args=(url,))
-        thread.daemon = True
-        thread.start()
-
-    def _cctv_thread(self, url):
-        """CCTV detection thread with full pipeline."""
-        try:
-            import sys
-            sys.path.insert(0, os.path.dirname(__file__))
-            from detect_with_tracking import VehicleDetectionPipeline, load_config
-
-            config = load_config()
-            config["model"]["confidence_threshold"] = self.conf_threshold.get()
-
-            self._update_info(f"Connecting to:\n{url}\n\nLoading pipeline...")
-
-            pipeline = VehicleDetectionPipeline(config, model_path=self.model_path.get())
-
-            cap = cv2.VideoCapture(url)
-            if not cap.isOpened():
-                self._update_status("Error: Cannot connect to CCTV")
-                self._update_info("Gagal koneksi ke CCTV.\nPastikan URL benar dan CCTV menyala.")
-                return
-
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps_src = cap.get(cv2.CAP_PROP_FPS) or 30
-
-            self._update_info(f"Connected!\nResolusi: {width}x{height}\nFPS: {fps_src}\n\nProcessing...")
-
-            fps_history = []
-            frame_count = 0
-
-            while self.is_processing:
-                ret, frame = cap.read()
-                if not ret:
-                    self._update_info("Stream terputus. Mencoba ulang...")
-                    time.sleep(1)
-                    cap.release()
-                    cap = cv2.VideoCapture(url)
-                    continue
-
-                frame_count += 1
-                result_frame, stats = pipeline.process_frame(frame)
-
-                fps_history.append(stats["fps"])
-                avg_fps = sum(fps_history[-30:]) / min(len(fps_history), 30)
-
-                self._display_cv_image(result_frame)
-                self.fps_label.config(text=f"FPS: {avg_fps:.1f}")
-
-                if frame_count % 30 == 0:
-                    info = f"CCTV Active\n"
-                    info += f"Frame: {frame_count}\n"
-                    info += f"FPS: {avg_fps:.1f}\n\n"
-                    info += f"Detected: {stats['total_detections']}\n"
-                    info += f"After ROI: {stats['after_roi']}\n"
-                    info += f"Tracked: {stats['tracked']}\n"
-                    info += f"Counted: {stats['counted']}"
-                    self._update_info(info)
-
-            cap.release()
-            self._update_status("CCTV stopped")
-
-        except Exception as e:
-            self._update_status(f"Error: {str(e)}")
-            self._update_info(f"Error:\n{str(e)}")
-
-        finally:
-            self.is_processing = False
-            self.detect_btn.config(state=tk.NORMAL)
-            self.cctv_btn.config(state=tk.NORMAL)
-            self.stop_btn.config(state=tk.DISABLED)
+    def _update_results(self, text):
+        """Update results text."""
+        def _update():
+            self.results_text.delete(1.0, tk.END)
+            self.results_text.insert(tk.END, text)
+        self.root.after(0, _update)
 
 
 def main():

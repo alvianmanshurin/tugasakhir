@@ -1,5 +1,6 @@
-"""Quick Start - Optimized for Intel i3-1115G4, 8GB RAM"""
-
+"""
+Script setup cepat untuk proyek deteksi kendaraan
+"""
 import os
 import sys
 import subprocess
@@ -15,7 +16,7 @@ def check_system():
     # CPU
     cpu = psutil.cpu_count(logical=False)
     cpu_logical = psutil.cpu_count()
-    print(f"\n[CPU] Intel Core i3-1115G4")
+    print(f"\n[CPU]")
     print(f"  Physical cores: {cpu}")
     print(f"  Logical cores: {cpu_logical}")
 
@@ -25,8 +26,15 @@ def check_system():
     print(f"\n[RAM] {ram_gb:.1f} GB")
 
     # GPU
-    print(f"\n[GPU] Intel UHD Graphics (Integrated)")
-    print(f"  Status: NO CUDA - Using CPU only")
+    print(f"\n[GPU]")
+    try:
+        import torch
+        if torch.cuda.is_available():
+            print(f"  {torch.cuda.get_device_name(0)}")
+        else:
+            print("  No CUDA - Using CPU only")
+    except:
+        print("  Unable to detect GPU")
 
     # Recommendation
     print(f"\n[SETTINGS APPLIED]")
@@ -39,41 +47,65 @@ def check_system():
 
 
 def install_requirements():
-    """Install required packages."""
-    print("\n[STEP 1] Installing packages...")
+    """Instal requirements yang diperlukan"""
+    print("\n=== INSTALASI REQUIREMENTS ===")
 
-    # Install PyTorch CPU first
-    print("  Installing PyTorch (CPU version)...")
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install",
-        "torch", "torchvision", "--index-url",
-        "https://download.pytorch.org/whl/cpu"
-    ])
+    print(f"Python: {sys.version}")
 
-    # Install other requirements
-    print("  Installing other packages...")
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install", "-r", "requirements.txt"
-    ])
+    packages = [
+        "ultralytics",
+        "opencv-python",
+        "pyyaml",
+        "numpy",
+        "pandas",
+        "matplotlib",
+        "seaborn",
+        "scikit-learn",
+        "psutil",
+        "Pillow",
+    ]
 
-    print("[OK] All packages installed")
+    for pkg in packages:
+        print(f"Installing {pkg}...")
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", pkg],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print(f"  [OK] {pkg}")
+        except subprocess.CalledProcessError:
+            print(f"  [ERROR] Failed to install {pkg}")
+
+    print("\n=== INSTALASI SELESAI ===")
 
 
 def create_directories():
-    """Create project directories."""
+    """Buat struktur direktori proyek"""
+    print("\n=== MEMBUAT DIREKTORI ===")
+
     dirs = [
-        "data/raw", "data/annotated/images/train", "data/annotated/images/val",
-        "data/annotated/labels/train", "data/annotated/labels/val",
-        "models", "outputs/detections", "outputs/evaluation", "docs",
+        "data/raw",
+        "data/annotated/images/train",
+        "data/annotated/images/val",
+        "data/annotated/labels/train",
+        "data/annotated/labels/val",
+        "models/vehicle_detection/weights",
+        "outputs/detections",
+        "outputs/evaluation",
+        "runs",
     ]
+
     for d in dirs:
         os.makedirs(d, exist_ok=True)
-    print("[OK] Directories created")
+        print(f"  [OK] {d}")
+
+    print("=== DIREKTORI SELESAI ===")
 
 
 def download_model():
     """Download YOLOv11n model."""
-    print("\n[STEP 3] Downloading YOLOv11n model...")
+    print("\n=== DOWNLOAD MODEL ===")
     try:
         from ultralytics import YOLO
         model = YOLO("yolov11n.pt")
@@ -88,23 +120,27 @@ def main():
     print("Optimized for Intel i3-1115G4, 8GB RAM")
     print("=" * 60)
 
+    # Step 1: Check system
+    print("\n[STEP 1] Checking system...")
     check_system()
 
-    print("\n[STEP 1] Install packages?")
-    print("  (Skip if already installed)")
+    # Step 2: Install packages
+    print("\n[STEP 2] Install packages?")
     resp = input("  Install? (y/n): ").strip().lower()
-
     if resp == 'y':
         install_requirements()
 
-    print("\n[STEP 2] Creating directories...")
+    # Step 3: Create directories
+    print("\n[STEP 3] Creating directories...")
     create_directories()
 
-    print("\n[STEP 3] Download model?")
+    # Step 4: Download model
+    print("\n[STEP 4] Download model?")
     resp = input("  Download YOLOv11n? (y/n): ").strip().lower()
     if resp == 'y':
         download_model()
 
+    # Summary
     print("\n" + "=" * 60)
     print("SETUP COMPLETE!")
     print("=" * 60)
@@ -167,6 +203,7 @@ def main():
     print("  5. Use --quick for testing")
     print("  6. Training ~25-30 min for 50 epochs")
     print("  7. Webcam runs at ~5-8 FPS")
+    print("  8. Augmentasi optimized (erasing OFF)")
 
 
 if __name__ == "__main__":
