@@ -24,6 +24,23 @@ psutil>=5.9.0
 # Evaluation
 scikit-learn>=1.3.0
 
+# Inference ONNX (opsional - hanya perlu kalau ekspor ONNX dipakai)
+# onnxruntime>=1.17.0
+
+# CATATAN VERSI (penting untuk laptop i3/8GB):
+#   numpy harus tetap di 1.x. opencv-python 4.8.x menolak NumPy 2.x
+#   ("A module that was compiled using NumPy 1.x cannot be run in
+#   NumPy 2.0.0"), sedangkan ml-dtypes 0.6+ yang ditarik oleh Ultralytics
+#   saat ekspor ONNX mensyaratkan numpy>=2. Kombinasi yang aman:
+#     numpy==1.26.4
+#     opencv-python==4.8.1.78
+#   Kalau numpy terlanjur naik ke 2.x, pasang ulang opencv-python>=4.10
+#   ATAU turunkan ml-dtypes ke <=0.5.
+
 # NOTE: Do NOT install torch/torchvision with CUDA
 # For CPU only, install:
 # pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#
+# tensorboard hanya perlu kalau memakai --task train di evaluate.py.
+# Pasangannya harus cocok: tensorboard 2.15.x dengan protobuf <5,
+# atau tensorboard >=2.17 dengan protobuf >=4.

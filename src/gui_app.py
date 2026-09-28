@@ -1,46 +1,88 @@
 """
-Aplikasi GUI untuk deteksi kendaraan
+GUI aplikasi deteksi kendaraan (Tkinter).
+
+Aturan threading yang dipegang file ini:
+
+  * Widget, StringVar/DoubleVar, PhotoImage, dan messagebox HANYA boleh
+    disentuh di main thread (thread yang menjalankan ``root.mainloop()``).
+  * Worker thread hanya boleh: membuat pipeline, membaca frame, menjalankan
+    inferensi, menulis ke database, dan menaruh frame ke ``queue.Queue``.
+  * Main thread Retire queue lewat ``root.after()``.
+
+Versi sebelumnya melanggar aturan ini: ``self.conf_threshold.get()``,
+``self.model_path.get()``, ``self.fps_label.config()``, dan
+``messagebox.showerror()`` dipanggil dari worker thread. Tkinter tidak
+thread-safe - pemanggilannya bisa membuat GUI hang atau crash tanpa
+jejak. Selain itu, penghitung naïf menambah ``counts[cls] += 1`` di dalam
+loop frame, sehingga satu kendaraan yang terlihat 200 frame dilaporkan
+sebagai "200 kendaraan".
 """
-import os
+
+import argparse
+import queue
 import sys
-import yaml
-import time
 import threading
+import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
 from pathlib import Path
+from tkinter import filedialog, messagebox, scrolledtext
+from typing import Optional
+
 import cv2
 from PIL import Image, ImageTk
-from ultralytics import YOLO
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-def load_config(config_path="config/config.yaml"):
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+from pipeline import VehiclePipeline
+from utils.database import DetectionDatabase
+from utils.paths import get_model_path, load_config
+
+# Diisi CLI; None = pakai config/config.yaml
+_CONFIG_OVERRIDE: Optional[str] = None
+
+VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".m4v"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 class VehicleDetectionGUI:
-    """GUI aplikasi deteksi kendaraan"""
+    """GUI aplikasi deteksi kendaraan."""
 
-    def __init__(self, root):
+    def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Vehicle Detection System - UPT K3L ITERA")
-        self.root.geometry("900x700")
+        self.root.geometry("1180x760")
         self.root.configure(bg="#2b2b2b")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Config
-        self.config = load_config()
-        self.class_names = self.config.get("dataset", {}).get("names",
-            {0: "motor", 1: "mobil", 2: "bus", 3: "truk"})
+        # --- Config (dibaca sekali di main thread) -----------------------
+        self.config = load_config(_CONFIG_OVERRIDE)
+        model_cfg = self.config.get("model", {})
+        self.class_names = dict(self.config.get("dataset", {}).get("names") or
+                                {0: "motor", 1: "mobil", 2: "bus", 3: "truk"})
 
-        # Variables
+        # --- Variables Tk (hanya disentuh di main thread) ----------------
         self.source_path = tk.StringVar()
-        self.model_path = tk.StringVar(value="models/vehicle_detection/weights/best.pt")
-        self.conf_threshold = tk.DoubleVar(value=0.5)
+        try:
+            default_model = get_model_path(self.config)
+        except FileNotFoundError:
+            default_model = model_cfg.get("best_weights", "")
+        self.model_path = tk.StringVar(value=default_model)
+        self.conf_threshold = tk.DoubleVar(
+            value=float(model_cfg.get("confidence_threshold", 0.5))
+        )
         self.rtsp_url = tk.StringVar()
+        self.save_to_db = tk.BooleanVar(value=False)
         self.is_processing = False
 
-        # Colors
+        # --- State antar thread ------------------------------------------
+        self._frame_queue: "queue.Queue" = queue.Queue(maxsize=2)
+        self._pending: dict = {}
+        self._lock = threading.Lock()
+        self._worker: Optional[threading.Thread] = None
+        # Disimpan sebagai atribut supaya PhotoImage tidak di-GC oleh Tk
+        self._tk_img = None
+
+        # --- Warna --------------------------------------------------------
         self.bg_color = "#2b2b2b"
         self.fg_color = "#ffffff"
         self.accent_color = "#4a9eff"
@@ -48,644 +90,618 @@ class VehicleDetectionGUI:
         self.warning_color = "#ff9800"
 
         self._create_widgets()
+        self._drain_queue()  # mulai pompa queue
 
-    def _create_widgets(self):
-        """Create GUI widgets."""
-        # Title
+    # ------------------------------------------------------------------
+    # Widgets
+    # ------------------------------------------------------------------
+
+    def _create_widgets(self) -> None:
         title_frame = tk.Frame(self.root, bg=self.accent_color, height=60)
         title_frame.pack(fill=tk.X)
         title_frame.pack_propagate(False)
-
         tk.Label(title_frame, text="VEHICLE DETECTION SYSTEM",
-                font=("Arial", 16, "bold"), bg=self.accent_color,
-                fg="white").pack(pady=15)
+                 font=("Arial", 16, "bold"), bg=self.accent_color,
+                 fg="white").pack(pady=15)
 
-        # Main container
         main_frame = tk.Frame(self.root, bg=self.bg_color)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Left panel - Controls
-        left_panel = tk.Frame(main_frame, bg="#3c3c3c", width=300)
+        left_panel = tk.Frame(main_frame, bg="#3c3c3c", width=320)
         left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
         left_panel.pack_propagate(False)
-
-        # Model section
-        tk.Label(left_panel, text="MODEL", font=("Arial", 10, "bold"),
-                bg="#3c3c3c", fg=self.accent_color).pack(pady=(10, 5), anchor=tk.W, padx=10)
-
-        tk.Label(left_panel, text="Model Path:", bg="#3c3c3c",
-                fg=self.fg_color).pack(anchor=tk.W, padx=10)
-        model_frame = tk.Frame(left_panel, bg="#3c3c3c")
-        model_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
-        tk.Entry(model_frame, textvariable=self.model_path, width=25).pack(side=tk.LEFT)
-        tk.Button(model_frame, text="Browse", command=self._browse_model).pack(side=tk.LEFT, padx=5)
-
-        tk.Label(left_panel, text=f"Confidence:", bg="#3c3c3c",
-                fg=self.fg_color).pack(anchor=tk.W, padx=10)
-        conf_scale = tk.Scale(left_panel, from_=0.1, to=1.0, resolution=0.05,
-                             variable=self.conf_threshold, orient=tk.HORIZONTAL,
-                             bg="#3c3c3c", fg=self.fg_color, troughcolor="#4a4a4a")
-        conf_scale.pack(fill=tk.X, padx=10, pady=(0, 10))
-
-        # Source section
-        tk.Label(left_panel, text="SOURCE", font=("Arial", 10, "bold"),
-                bg="#3c3c3c", fg=self.accent_color).pack(pady=(10, 5), anchor=tk.W, padx=10)
-
-        tk.Label(left_panel, text="Image/Video Path:", bg="#3c3c3c",
-                fg=self.fg_color).pack(anchor=tk.W, padx=10)
-        source_frame = tk.Frame(left_panel, bg="#3c3c3c")
-        source_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
-        tk.Entry(source_frame, textvariable=self.source_path, width=25).pack(side=tk.LEFT)
-        tk.Button(source_frame, text="Browse", command=self._browse_source).pack(side=tk.LEFT, padx=5)
-
-        # CCTV section
-        tk.Label(left_panel, text="CCTV / RTSP", font=("Arial", 10, "bold"),
-                bg="#3c3c3c", fg=self.warning_color).pack(pady=(10, 5), anchor=tk.W, padx=10)
-
-        tk.Label(left_panel, text="RTSP URL:", bg="#3c3c3c",
-                fg=self.fg_color).pack(anchor=tk.W, padx=10)
-        rtsp_frame = tk.Frame(left_panel, bg="#3c3c3c")
-        rtsp_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
-        tk.Entry(rtsp_frame, textvariable=self.rtsp_url, width=25).pack(side=tk.LEFT)
-
-        self.cctv_btn = tk.Button(left_panel, text="CCTV",
-                                   command=self._run_cctv,
-                                   bg="#ff5722", fg="white",
-                                   font=("Arial", 10, "bold"), height=2)
-        self.cctv_btn.pack(fill=tk.X, padx=10, pady=(0, 10))
-
-        # Buttons
-        btn_frame = tk.Frame(left_panel, bg="#3c3c3c")
-        btn_frame.pack(fill=tk.X, padx=10, pady=10)
-
-        self.detect_btn = tk.Button(btn_frame, text="DETECT",
-                                   command=self._run_detection,
-                                   bg=self.accent_color, fg="white",
-                                   font=("Arial", 10, "bold"), height=2)
-        self.detect_btn.pack(fill=tk.X, pady=(0, 5))
-
-        self.webcam_btn = tk.Button(btn_frame, text="WEBCAM",
-                                   command=self._run_webcam,
-                                   bg=self.warning_color, fg="white",
-                                   font=("Arial", 10, "bold"), height=2)
-        self.webcam_btn.pack(fill=tk.X, pady=(0, 5))
-
-        self.stop_btn = tk.Button(btn_frame, text="STOP",
-                                 command=self._stop_processing,
-                                 bg="#f44336", fg="white",
-                                 font=("Arial", 10, "bold"), height=2,
-                                 state=tk.DISABLED)
-        self.stop_btn.pack(fill=tk.X)
-
-        # Info section
-        tk.Label(left_panel, text="INFO", font=("Arial", 10, "bold"),
-                bg="#3c3c3c", fg=self.accent_color).pack(pady=(15, 5), anchor=tk.W, padx=10)
-
-        self.info_text = tk.Text(left_panel, height=8, bg="#2b2b2b",
-                                fg=self.fg_color, font=("Consolas", 9))
-        self.info_text.pack(fill=tk.X, padx=10, pady=(0, 10))
-        self._update_info("System ready.\nSelect source and click DETECT.")
-
-        # Right panel - Display
         right_panel = tk.Frame(main_frame, bg="#3c3c3c")
         right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        tk.Label(right_panel, text="DISPLAY", font=("Arial", 10, "bold"),
-                bg="#3c3c3c", fg=self.accent_color).pack(pady=(10, 5))
+        # --- Panel kiri: model & threshold -------------------------------
+        tk.Label(left_panel, text="MODEL", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.accent_color).pack(pady=(10, 5),
+                                                          anchor=tk.W, padx=10)
+        tk.Label(left_panel, text="Model Path:", bg="#3c3c3c",
+                 fg=self.fg_color).pack(anchor=tk.W, padx=10)
+        model_frame = tk.Frame(left_panel, bg="#3c3c3c")
+        model_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+        tk.Entry(model_frame, textvariable=self.model_path).pack(side=tk.LEFT,
+                                                                 fill=tk.X,
+                                                                 expand=True)
+        tk.Button(model_frame, text="Browse",
+                  command=self._browse_model).pack(side=tk.LEFT, padx=5)
 
+        tk.Label(left_panel, text="Confidence (track baru):", bg="#3c3c3c",
+                 fg=self.fg_color).pack(anchor=tk.W, padx=10)
+        tk.Scale(left_panel, from_=0.1, to=1.0, resolution=0.05,
+                 variable=self.conf_threshold, orient=tk.HORIZONTAL,
+                 bg="#3c3c3c", fg=self.fg_color, troughcolor="#4a4a4a",
+                 highlightthickness=0).pack(fill=tk.X, padx=10, pady=(0, 2))
+        tk.Label(left_panel, text="< 0.25 = confidence rendah hanya untuk "
+                                  "menolong track yang hilang",
+                 bg="#3c3c3c", fg="#9a9a9a", font=("Arial", 8),
+                 wraplength=290, justify=tk.LEFT).pack(anchor=tk.W, padx=10,
+                                                        pady=(0, 10))
+
+        # --- Panel kiri: sumber ------------------------------------------
+        tk.Label(left_panel, text="SOURCE", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.accent_color).pack(pady=(10, 5),
+                                                          anchor=tk.W, padx=10)
+        tk.Label(left_panel, text="Image / Video / Folder:", bg="#3c3c3c",
+                 fg=self.fg_color).pack(anchor=tk.W, padx=10)
+        source_frame = tk.Frame(left_panel, bg="#3c3c3c")
+        source_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+        tk.Entry(source_frame, textvariable=self.source_path).pack(side=tk.LEFT,
+                                                                   fill=tk.X,
+                                                                   expand=True)
+        tk.Button(source_frame, text="Browse",
+                  command=self._browse_source).pack(side=tk.LEFT, padx=5)
+
+        tk.Checkbutton(left_panel, text="Simpan hasil ke database",
+                       variable=self.save_to_db, bg="#3c3c3c", fg=self.fg_color,
+                       selectcolor="#3c3c3c", activebackground="#3c3c3c",
+                       activeforeground=self.fg_color,
+                       font=("Arial", 9)).pack(anchor=tk.W, padx=10, pady=(5, 10))
+
+        # --- Panel kiri: CCTV --------------------------------------------
+        tk.Label(left_panel, text="CCTV / RTSP", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.warning_color).pack(pady=(10, 5),
+                                                           anchor=tk.W, padx=10)
+        tk.Label(left_panel, text="RTSP URL:", bg="#3c3c3c",
+                 fg=self.fg_color).pack(anchor=tk.W, padx=10)
+        rtsp_frame = tk.Frame(left_panel, bg="#3c3c3c")
+        rtsp_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+        tk.Entry(rtsp_frame, textvariable=self.rtsp_url).pack(side=tk.LEFT,
+                                                              fill=tk.X,
+                                                              expand=True)
+        self.cctv_btn = tk.Button(left_panel, text="CCTV", command=self._run_cctv,
+                                  bg="#ff5722", fg="white",
+                                  font=("Arial", 10, "bold"))
+        self.cctv_btn.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        # --- Panel kiri: tombol aksi ------------------------------------
+        btn_frame = tk.Frame(left_panel, bg="#3c3c3c")
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+        self.detect_btn = tk.Button(btn_frame, text="DETECT",
+                                    command=self._run_detection, bg=self.accent_color,
+                                    fg="white", font=("Arial", 10, "bold"), height=2)
+        self.detect_btn.pack(fill=tk.X, pady=(0, 5))
+        self.webcam_btn = tk.Button(btn_frame, text="WEBCAM",
+                                    command=self._run_webcam, bg=self.warning_color,
+                                    fg="white", font=("Arial", 10, "bold"), height=2)
+        self.webcam_btn.pack(fill=tk.X, pady=(0, 5))
+        self.stop_btn = tk.Button(btn_frame, text="STOP",
+                                  command=self._stop_processing, bg="#f44336",
+                                  fg="white", font=("Arial", 10, "bold"), height=2,
+                                  state=tk.DISABLED)
+        self.stop_btn.pack(fill=tk.X)
+
+        # --- Panel kiri: info --------------------------------------------
+        tk.Label(left_panel, text="INFO", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.accent_color).pack(pady=(15, 5),
+                                                          anchor=tk.W, padx=10)
+        self.info_text = tk.Text(left_panel, height=10, bg="#2b2b2b", fg=self.fg_color,
+                                 font=("Consolas", 9), wrap=tk.WORD)
+        self.info_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        # --- Panel kanan: display ----------------------------------------
+        tk.Label(right_panel, text="DISPLAY", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.accent_color).pack(pady=(10, 5))
         self.display_label = tk.Label(right_panel, bg="#1e1e1e",
-                                     text="No image/video loaded",
-                                     fg="#666666", font=("Arial", 12))
+                                     text="No image/video loaded", fg="#666666",
+                                     font=("Arial", 12))
         self.display_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
-        # Results section
-        tk.Label(right_panel, text="RESULTS", font=("Arial", 10, "bold"),
-                bg="#3c3c3c", fg=self.accent_color).pack(anchor=tk.W, padx=10)
-
-        self.results_text = scrolledtext.ScrolledText(right_panel, height=8,
+        # --- Panel kanan: hasil hitungan ---------------------------------
+        tk.Label(right_panel, text="HASIL PENGHITUNGAN", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.accent_color).pack(anchor=tk.W, padx=10)
+        self.results_text = scrolledtext.ScrolledText(right_panel, height=12,
                                                      bg="#1e1e1e", fg=self.fg_color,
                                                      font=("Consolas", 9))
         self.results_text.pack(fill=tk.X, padx=10, pady=(0, 10))
 
-        # Status bar
+        # --- Status bar ----------------------------------------------------
         status_frame = tk.Frame(self.root, bg="#1e1e1e", height=30)
         status_frame.pack(fill=tk.X, side=tk.BOTTOM)
         status_frame.pack_propagate(False)
-
-        self.status_label = tk.Label(status_frame, text="Ready",
-                                    bg="#1e1e1e", fg=self.fg_color,
-                                    font=("Arial", 9))
+        self.status_label = tk.Label(status_frame, text="Ready", bg="#1e1e1e",
+                                     fg=self.fg_color, font=("Arial", 9))
         self.status_label.pack(side=tk.LEFT, padx=10)
-
-        self.fps_label = tk.Label(status_frame, text="FPS: --",
-                                 bg="#1e1e1e", fg=self.success_color,
-                                 font=("Arial", 9))
+        self.fps_label = tk.Label(status_frame, text="FPS: --", bg="#1e1e1e",
+                                  fg=self.success_color, font=("Arial", 9))
         self.fps_label.pack(side=tk.RIGHT, padx=10)
+        self.count_label = tk.Label(status_frame, text="Kendaraan: 0", bg="#1e1e1e",
+                                    fg=self.warning_color, font=("Arial", 9, "bold"))
+        self.count_label.pack(side=tk.RIGHT, padx=10)
 
-    def _browse_model(self):
-        """Browse model file."""
+        self._update_info("Siap.\nPilih sumber, lalu klik DETECT.\n\n"
+                          "Penghitungan memakai ID track: satu kendaraan yang "
+                          "terlihat di banyak frame tetap dihitung 1 kali.")
+
+    # ------------------------------------------------------------------
+    # Dialog
+    # ------------------------------------------------------------------
+
+    def _browse_model(self) -> None:
         path = filedialog.askopenfilename(
-            title="Select Model",
-            filetypes=[("PyTorch Model", "*.pt"), ("All files", "*.*")]
-        )
+            title="Pilih Model",
+            filetypes=[("PyTorch Model", "*.pt"), ("All files", "*.*")])
         if path:
             self.model_path.set(path)
 
-    def _browse_source(self):
-        """Browse source image/video."""
+    def _browse_source(self) -> None:
         path = filedialog.askopenfilename(
-            title="Select Source",
-            filetypes=[
-                ("Media files", "*.jpg *.jpeg *.png *.mp4 *.avi *.mov *.mkv"),
-                ("Images", "*.jpg *.jpeg *.png"),
-                ("Videos", "*.mp4 *.avi *.mov *.mkv"),
-                ("All files", "*.*")
-            ]
-        )
+            title="Pilih Sumber",
+            filetypes=[("Media", " ".join(f"*{e}" for e in sorted(VIDEO_EXTS | IMAGE_EXTS))),
+                       ("Video", " ".join(f"*{e}" for e in sorted(VIDEO_EXTS))),
+                       ("Image", " ".join(f"*{e}" for e in sorted(IMAGE_EXTS))),
+                       ("All files", "*.*")])
         if path:
             self.source_path.set(path)
 
-    def _run_detection(self):
-        """Run detection on selected source."""
-        source = self.source_path.get()
-        if not source:
-            messagebox.showerror("Error", "Please select an image or video file.")
-            return
+    # ------------------------------------------------------------------
+    # Ponteks run: dibaca di MAIN THREAD sebelum worker dibuat
+    # ------------------------------------------------------------------
 
-        self.is_processing = True
-        self.detect_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-        self._update_status("Processing...")
+    def _make_run_context(self) -> dict:
+        """
+        Kumpulkan semua nilai Tk/config yang dibutuhkan worker.
 
-        thread = threading.Thread(target=self._detect_thread, args=(source,))
-        thread.daemon = True
-        thread.start()
+        Dipanggil dari main thread, jadi aman membaca StringVar/DoubleVar.
+        """
+        conf = float(self.conf_threshold.get())
+        model_cfg = self.config.setdefault("model", {})
+        # Ambang low tidak boleh lebih tinggi dari ambang high.
+        model_cfg["low_conf_threshold"] = min(model_cfg.get("low_conf_threshold", 0.25), conf)
+        model_cfg["confidence_threshold"] = conf
+        return {
+            "config": self.config,
+            "model_path": self.model_path.get().strip() or None,
+            "save_db": bool(self.save_to_db.get()),
+        }
 
-    def _detect_thread(self, source):
-        """Detection thread."""
+    def _set_running(self, running: bool) -> None:
+        self.is_processing = running
+        state = tk.DISABLED if running else tk.NORMAL
+        for btn in (self.detect_btn, self.webcam_btn, self.cctv_btn):
+            btn.config(state=state)
+        self.stop_btn.config(state=tk.NORMAL if running else tk.DISABLED)
+
+    def _spawn(self, target_name: str, **kwargs) -> None:
+        self._set_running(True)
+        self._update_status("Memproses...")
+        ctx = self._make_run_context()
+        self._worker = threading.Thread(
+            target=getattr(self, target_name), args=(ctx,), kwargs=kwargs, daemon=True
+        )
+        self._worker.start()
+
+    # ------------------------------------------------------------------
+    # Loop video/webcam/cctv (WORKER THREAD)
+    # ------------------------------------------------------------------
+
+    def _stream_worker(self, ctx: dict, kind: str, source, save_video: bool = False) -> None:
+        """
+        Loop utama untuk video / webcam / CCTV.
+
+        Tidak boleh menyentuh widget. Semua hasil dikirim lewat
+        ``_frame_queue`` dan ditulis ke database.
+        """
+        pipeline = None
+        cap = None
+        writer = None
+        db = None
+        session_id = None
+        output_path = None
         try:
-            # Load model
-            model_path = self.model_path.get()
-            self._update_info(f"Loading model:\n{model_path}\n\n")
-            model = YOLO(model_path)
+            pipeline = VehiclePipeline(config=ctx["config"], model_path=ctx["model_path"])
+            pipeline.reset()
 
-            source_path = Path(source)
-            video_exts = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv']
-            is_video = source_path.suffix.lower() in video_exts
-
-            if is_video:
-                self._detect_video(source, model)
-            elif source_path.is_file():
-                self._detect_image(source, model)
-            elif source_path.is_dir():
-                self._detect_directory(source, model)
-
-        except Exception as e:
-            self._update_status(f"Error: {str(e)}")
-            messagebox.showerror("Error", str(e))
-
-        finally:
-            self.is_processing = False
-            self.detect_btn.config(state=tk.NORMAL)
-            self.stop_btn.config(state=tk.DISABLED)
-
-    def _detect_image(self, source, model):
-        """Detect on single image."""
-        img = cv2.imread(source)
-        if img is None:
-            self._update_status("Error: Cannot read image")
-            return
-
-        start = time.time()
-        results = model(img, conf=self.conf_threshold.get(),
-                      imgsz=self.config["model"]["input_size"],
-                      verbose=False)
-        inference_time = time.time() - start
-
-        counts = {name: 0 for name in self.class_names.values()}
-        colors = [(255,0,0), (0,255,0), (0,0,255), (255,255,0)]
-
-        for result in results:
-            if result.boxes is not None:
-                for box in result.boxes:
-                    cls_id = int(box.cls[0])
-                    xyxy = box.xyxy[0].tolist()
-                    x1, y1, x2, y2 = [int(c) for c in xyxy]
-                    if cls_id < len(self.class_names):
-                        cls_name = self.class_names[cls_id]
-                        counts[cls_name] += 1
-                        color = colors[cls_id % len(colors)]
-                        cv2.rectangle(img, (x1,y1), (x2,y2), color, 2)
-                        label = f"{cls_name} {float(box.conf[0]):.2f}"
-                        cv2.putText(img, label, (x1, y1-10),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-
-        self._display_image(img)
-
-        total = sum(counts.values())
-        fps = 1/inference_time if inference_time > 0 else 0
-        self.fps_label.config(text=f"FPS: {fps:.1f}")
-
-        result_text = f"Detection Results\n{'='*30}\n"
-        result_text += f"Total: {total} vehicles\n\n"
-        for name, count in counts.items():
-            if count > 0:
-                result_text += f"{name}: {count}\n"
-        result_text += f"\nInference: {inference_time*1000:.0f}ms"
-        result_text += f"\nFPS: {fps:.1f}"
-
-        self._update_results(result_text)
-        self._update_status("Detection complete")
-
-    def _detect_video(self, source, model):
-        """Detect on video file."""
-        cap = cv2.VideoCapture(source)
-        if not cap.isOpened():
-            self._update_status("Error: Cannot open video")
-            return
-
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps_src = cap.get(cv2.CAP_PROP_FPS) or 30
-
-        self._update_info(f"Video: {Path(source).name}\nResolusi: {width}x{height}\nTotal Frame: {total_frames}\nFPS: {fps_src}\n\nProcessing...")
-
-        output_path = str(Path(source).parent / f"{Path(source).stem}_output.mp4")
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(output_path, fourcc, fps_src, (width, height))
-
-        fps_history = []
-        frame_count = 0
-        counts = {name: 0 for name in self.class_names.values()}
-
-        while self.is_processing:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            frame_count += 1
-            start = time.time()
-
-            results = model(frame, conf=self.conf_threshold.get(),
-                          imgsz=self.config["model"]["input_size"],
-                          verbose=False)
-
-            colors = [(255,0,0), (0,255,0), (0,0,255), (255,255,0)]
-
-            for result in results:
-                if result.boxes is not None:
-                    for box in result.boxes:
-                        cls_id = int(box.cls[0])
-                        conf = float(box.conf[0])
-                        xyxy = box.xyxy[0].tolist()
-                        x1, y1, x2, y2 = [int(c) for c in xyxy]
-
-                        if cls_id < len(self.class_names):
-                            cls_name = self.class_names[cls_id]
-                            counts[cls_name] += 1
-                            color = colors[cls_id % len(colors)]
-                            cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
-                            label = f"{cls_name} {conf:.2f}"
-                            cv2.putText(frame, label, (x1, y1-10),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-
-            inference_time = time.time() - start
-            fps = 1/inference_time if inference_time > 0 else 0
-            fps_history.append(fps)
-            avg_fps = sum(fps_history[-30:]) / min(len(fps_history), 30)
-
-            writer.write(frame)
-            self._display_cv_image(frame)
-            self.fps_label.config(text=f"FPS: {avg_fps:.1f}")
-
-            if frame_count % 30 == 0:
-                progress = frame_count / total_frames * 100 if total_frames > 0 else 0
-                total = sum(counts.values())
-                info = f"Processing Video...\n"
-                info += f"Frame: {frame_count}/{total_frames}\n"
-                info += f"Progress: {progress:.1f}%\n"
-                info += f"FPS: {avg_fps:.1f}\n\n"
-                info += f"Detected: {total}"
-                self._update_info(info)
-
-        cap.release()
-        writer.release()
-
-        result_text = f"Video Complete\n{'='*30}\n"
-        result_text += f"Total Frame: {frame_count}\n"
-        result_text += f"Avg FPS: {avg_fps:.1f}\n\n"
-        for name, count in counts.items():
-            if count > 0:
-                result_text += f"{name}: {count}\n"
-        result_text += f"\nOutput saved:\n{output_path}"
-
-        self._update_results(result_text)
-        self._update_status(f"Video complete. Output: {output_path}")
-
-    def _detect_directory(self, source, model):
-        """Detect on directory of images."""
-        source_path = Path(source)
-        exts = ["*.jpg", "*.jpeg", "*.png", "*.bmp"]
-        images = []
-        for ext in exts:
-            images.extend(source_path.glob(ext))
-
-        self._update_info(f"Processing {len(images)} images...\n\n")
-
-        total_counts = {name: 0 for name in self.class_names.values()}
-        total_vehicles = 0
-
-        for idx, img_path in enumerate(sorted(images), 1):
-            if not self.is_processing:
-                break
-
-            img = cv2.imread(str(img_path))
-            if img is None:
-                continue
-
-            results = model(img, conf=self.conf_threshold.get(),
-                          imgsz=self.config["model"]["input_size"],
-                          verbose=False)
-
-            for result in results:
-                if result.boxes is not None:
-                    for box in result.boxes:
-                        cls_id = int(box.cls[0])
-                        if cls_id < len(self.class_names):
-                            total_counts[self.class_names[cls_id]] += 1
-                            total_vehicles += 1
-
-            if idx % 5 == 0:
-                self._update_info(f"Processing: {idx}/{len(images)}\n"
-                                 f"Vehicles found: {total_vehicles}")
-
-        result_text = f"Batch Results\n{'='*30}\n"
-        result_text += f"Images: {len(images)}\n"
-        result_text += f"Total vehicles: {total_vehicles}\n\n"
-        for name, count in total_counts.items():
-            if count > 0:
-                result_text += f"{name}: {count}\n"
-
-        self._update_results(result_text)
-        self._update_status("Batch processing complete")
-
-    def _run_webcam(self):
-        """Run webcam detection."""
-        self.is_processing = True
-        self.detect_btn.config(state=tk.DISABLED)
-        self.webcam_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-        self._update_status("Webcam active...")
-
-        thread = threading.Thread(target=self._webcam_thread)
-        thread.daemon = True
-        thread.start()
-
-    def _webcam_thread(self):
-        """Webcam thread."""
-        try:
-            model = YOLO(self.model_path.get())
-            cap = cv2.VideoCapture(0)
-
+            cap = cv2.VideoCapture(0 if source in ("0", 0) else source)
             if not cap.isOpened():
-                self._update_status("Error: Cannot open webcam")
-                return
-
-            self._update_info("Webcam active\nPress 'q' in video window to stop\n")
-
-            fps_history = []
-
-            while self.is_processing:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                start = time.time()
-                results = model(frame, conf=self.conf_threshold.get(),
-                              imgsz=self.config["model"]["input_size"],
-                              verbose=False)
-                inference_time = time.time() - start
-
-                colors = [(255,0,0), (0,255,0), (0,0,255), (255,255,0)]
-                counts = {name: 0 for name in self.class_names.values()}
-
-                for result in results:
-                    if result.boxes is not None:
-                        for box in result.boxes:
-                            cls_id = int(box.cls[0])
-                            conf = float(box.conf[0])
-                            xyxy = box.xyxy[0].tolist()
-                            x1, y1, x2, y2 = [int(c) for c in xyxy]
-
-                            if cls_id < len(self.class_names):
-                                cls_name = self.class_names[cls_id]
-                                counts[cls_name] += 1
-                                color = colors[cls_id % len(colors)]
-                                cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
-                                label = f"{cls_name} {conf:.2f}"
-                                cv2.putText(frame, label, (x1, y1-10),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-
-                fps = 1/inference_time if inference_time > 0 else 0
-                fps_history.append(fps)
-                avg_fps = sum(fps_history[-30:]) / min(len(fps_history), 30)
-
-                cv2.putText(frame, f"FPS: {avg_fps:.1f}", (10, 30),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-                total = sum(counts.values())
-                cv2.putText(frame, f"Vehicles: {total}", (10, 60),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-
-                self._display_cv_image(frame)
-                self.fps_label.config(text=f"FPS: {avg_fps:.1f}")
-
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-
-            cap.release()
-            cv2.destroyAllWindows()
-            self._update_status("Webcam stopped")
-
-        except Exception as e:
-            self._update_status(f"Error: {str(e)}")
-
-        finally:
-            self.is_processing = False
-            self.detect_btn.config(state=tk.NORMAL)
-            self.webcam_btn.config(state=tk.NORMAL)
-            self.stop_btn.config(state=tk.DISABLED)
-
-    def _run_cctv(self):
-        """Run CCTV/RTSP detection."""
-        url = self.rtsp_url.get()
-        if not url:
-            messagebox.showerror("Error", "Please enter RTSP URL.")
-            return
-
-        self.is_processing = True
-        self.detect_btn.config(state=tk.DISABLED)
-        self.cctv_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-        self._update_status("Connecting to CCTV...")
-
-        thread = threading.Thread(target=self._cctv_thread, args=(url,))
-        thread.daemon = True
-        thread.start()
-
-    def _cctv_thread(self, url):
-        """CCTV detection thread."""
-        try:
-            model = YOLO(self.model_path.get())
-
-            self._update_info(f"Connecting to:\n{url}\n\nLoading model...")
-
-            cap = cv2.VideoCapture(url)
-            if not cap.isOpened():
-                self._update_status("Error: Cannot connect to CCTV")
-                self._update_info("Gagal koneksi ke CCTV.\nPastikan URL benar dan CCTV menyala.")
-                return
+                raise RuntimeError(f"Tidak dapat membuka sumber: {source}")
 
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps_src = cap.get(cv2.CAP_PROP_FPS) or 30
+            src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
-            self._update_info(f"Connected!\nResolusi: {width}x{height}\nFPS: {fps_src}\n\nProcessing...")
+            if save_video and kind == "video":
+                stem = Path(source).stem
+                output_path = str(Path(source).parent / f"{stem}_output.mp4")
+                writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"),
+                                         src_fps, (width, height))
 
-            fps_history = []
-            frame_count = 0
+            if ctx["save_db"]:
+                db = DetectionDatabase()
+                session_id = db.start_session(
+                    session_name=f"{Path(str(source)).stem or kind}_{int(time.time())}",
+                    source_type=kind, source_path=str(source))
+
+            self._push_info(
+                f"Sumber    : {source}\n"
+                f"Resolusi  : {width}x{height}\n"
+                f"Model     : {Path(pipeline.model_path).name}\n"
+                f"Ambang    : low {pipeline.low_conf_threshold} / "
+                f"high {pipeline.conf_threshold}\n"
+                f"ROI       : {'ON' if pipeline.roi_filter.config.enabled else 'OFF'} "
+                f"({pipeline.roi_filter.coverage_ratio((height, width, 3)):.1%} dari frame)\n"
+                f"Tracker   : min_hits={pipeline.tracker.min_hits}, "
+                f"max_age={pipeline.tracker.max_age}\n"
+                f"Garis     : {pipeline.counter.line1_position} / "
+                f"{pipeline.counter.line2_position}\n"
+                f"Database  : {'AKTIF' if db else 'tidak aktif'}\n"
+                f"Total frame: {total_frames or '?'}\n\nMemproses..."
+            )
+
+            frame_no = 0
+            wall_start = time.perf_counter()
+            reconnect = kind == "cctv"
 
             while self.is_processing:
-                ret, frame = cap.read()
-                if not ret:
-                    self._update_info("Stream terputus. Mencoba ulang...")
-                    time.sleep(1)
-                    cap.release()
-                    cap = cv2.VideoCapture(url)
-                    continue
+                ok, frame = cap.read()
+                if not ok:
+                    if reconnect and self.is_processing:
+                        self._push_info("Stream terputus. Mencoba sambung ulang...")
+                        time.sleep(1.0)
+                        cap.release()
+                        cap = cv2.VideoCapture(source)
+                        continue
+                    break
 
-                frame_count += 1
-                start = time.time()
+                frame_no += 1
+                annotated, tracked, info = pipeline.process_frame(
+                    frame, timestamp=time.perf_counter() - wall_start)
 
-                results = model(frame, conf=self.conf_threshold.get(),
-                              imgsz=self.config["model"]["input_size"],
-                              verbose=False)
+                if writer is not None:
+                    writer.write(annotated)
 
-                colors = [(255,0,0), (0,255,0), (0,0,255), (255,255,0)]
-                counts = {name: 0 for name in self.class_names.values()}
+                if db is not None:
+                    db.save_detections_batch(session_id, [
+                        {
+                            "vehicle_id": f"track_{t['track_id']}",
+                            "class_id": t["class_id"], "class_name": t["class_name"],
+                            "confidence": t["confidence"], "bbox": t["bbox"],
+                            "frame_number": info["frame_number"],
+                            "timestamp": info["timestamp"],
+                            "direction": t.get("direction"),
+                            "counted": bool(t.get("counted")),
+                        } for t in tracked
+                    ])
+                    db.save_frame_stats(
+                        session_id, info["frame_number"], info["detections_count"],
+                        info["after_roi_count"], info["tracked_count"],
+                        info["counted_count"], info["fps"], info["timestamp"])
 
-                for result in results:
-                    if result.boxes is not None:
-                        for box in result.boxes:
-                            cls_id = int(box.cls[0])
-                            conf = float(box.conf[0])
-                            xyxy = box.xyxy[0].tolist()
-                            x1, y1, x2, y2 = [int(c) for c in xyxy]
+                self._queue_frame(annotated, info, pipeline)
 
-                            if cls_id < len(self.class_names):
-                                cls_name = self.class_names[cls_id]
-                                counts[cls_name] += 1
-                                color = colors[cls_id % len(colors)]
-                                cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
-                                label = f"{cls_name} {conf:.2f}"
-                                cv2.putText(frame, label, (x1, y1-10),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                if frame_no % 30 == 0:
+                    progress = (f"{frame_no / total_frames * 100:.0f}%"
+                                if total_frames else "-")
+                    self._push_info(
+                        f"Frame     : {frame_no}"
+                        f"{f'/{total_frames}' if total_frames else ''} ({progress})\n"
+                        f"FPS       : {info['fps']:.1f}\n"
+                        f"Output YOLO: {info['detections_count']}  "
+                        f"setelah ROI: {info['after_roi_count']}  "
+                        f"dilacak: {info['tracked_count']}\n"
+                        f"KENDARAAN TERHITUNG: {info['total_count']} "
+                        f"(unik per track)\n"
+                        f"Per kelas : {pipeline.counter.get_count_summary()['by_class']}"
+                    )
 
-                inference_time = time.time() - start
-                fps = 1/inference_time if inference_time > 0 else 0
-                fps_history.append(fps)
-                avg_fps = sum(fps_history[-30:]) / min(len(fps_history), 30)
+            summary = pipeline.summary()
+            self._push_done(
+                f"Video Selesai\n{'=' * 32}\n"
+                f"Frame diproses : {summary['total_frames']}\n"
+                f"FPS rerata     : {summary['avg_fps']:.1f}\n"
+                f"KENDARAAN     : {summary['total_counted']}\n\n"
+                f"Per kelas:\n" + _fmt_counts(summary["by_class"])
+                + f"\nMASUK (down):\n" + _fmt_counts(summary["by_direction"].get("down", {}))
+                + f"\nKELUAR (up):\n" + _fmt_counts(summary["by_direction"].get("up", {}))
+                + (f"\nVideo output : {output_path}" if output_path else "")
+                + (f"\nDatabase     : session #{session_id} tersimpan" if db else "")
+            )
 
-                cv2.putText(frame, f"FPS: {avg_fps:.1f}", (10, 30),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-                total = sum(counts.values())
-                cv2.putText(frame, f"Vehicles: {total}", (10, 60),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-
-                self._display_cv_image(frame)
-                self.fps_label.config(text=f"FPS: {avg_fps:.1f}")
-
-                if frame_count % 30 == 0:
-                    info = f"CCTV Active\n"
-                    info += f"Frame: {frame_count}\n"
-                    info += f"FPS: {avg_fps:.1f}\n\n"
-                    for name, count in counts.items():
-                        if count > 0:
-                            info += f"{name}: {count}\n"
-                    self._update_info(info)
-
-            cap.release()
-            self._update_status("CCTV stopped")
-
-        except Exception as e:
-            self._update_status(f"Error: {str(e)}")
-            self._update_info(f"Error:\n{str(e)}")
-
+        except Exception as exc:  # noqa: BLE001 - dikembalikan ke GUI
+            self._push_error(str(exc))
         finally:
-            self.is_processing = False
-            self.detect_btn.config(state=tk.NORMAL)
-            self.cctv_btn.config(state=tk.NORMAL)
-            self.stop_btn.config(state=tk.DISABLED)
+            if cap is not None:
+                cap.release()
+            if writer is not None:
+                writer.release()
+            if db is not None and session_id is not None and pipeline is not None:
+                try:
+                    db.finalize_session(session_id, pipeline.summary())
+                finally:
+                    db.close()
+            self._push_stopped()
 
-    def _display_image(self, cv_img):
-        """Display OpenCV image in label."""
-        rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(rgb)
+    # ------------------------------------------------------------------
+    # Image tunggal & folder (WORKER THREAD)
+    # ------------------------------------------------------------------
+
+    def _image_worker(self, ctx: dict, source: str) -> None:
+        try:
+            pipeline = VehiclePipeline(config=ctx["config"], model_path=ctx["model_path"])
+            img = cv2.imread(source)
+            if img is None:
+                raise RuntimeError(f"Gambar tidak terbaca: {source}")
+
+            start = time.perf_counter()
+            annotated, tracked, info = pipeline.process_frame(img, timestamp=0.0)
+            elapsed = time.perf_counter() - start
+
+            self._push_info(
+                f"File      : {Path(source).name}\n"
+                f"Resolusi  : {img.shape[1]}x{img.shape[0]}\n"
+                f"Waktu     : {elapsed * 1000:.0f} ms\n"
+                f"Setelah ROI: {info['after_roi_count']} dari "
+                f"{info['detections_count']} deteksi\n"
+                f"Dilacak   : {info['tracked_count']}\n\n"
+                "CATATAN: pada satu gambar tidak ada lintasan, jadi penghitungan "
+                "dual-line tidak bisa menghasilkan angka. Penghitungan hanya "
+                "berfungsi untuk video/webcam/CCTV."
+            )
+            self._queue_frame(annotated, info, pipeline)
+            self._push_done(
+                f"Deteksi Selesai\n{'=' * 32}\n"
+                f"File       : {Path(source).name}\n"
+                f"Waktu      : {elapsed * 1000:.0f} ms ({1 / elapsed:.1f} FPS)\n"
+                f"Deteksi    : {info['detections_count']}\n"
+                f"Setelah ROI: {info['after_roi_count']}\n"
+                f"Dilacak    : {info['tracked_count']}\n"
+                + _fmt_object_list(tracked)
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._push_error(str(exc))
+        finally:
+            self._push_stopped()
+
+    def _directory_worker(self, ctx: dict, source: str) -> None:
+        try:
+            pipeline = VehiclePipeline(config=ctx["config"], model_path=ctx["model_path"])
+            files = sorted(
+                p for p in Path(source).iterdir()
+                if p.suffix.lower() in IMAGE_EXTS
+            )
+            if not files:
+                raise RuntimeError(f"Tidak ada gambar di: {source}")
+
+            self._push_info(f"Mengolah {len(files)} gambar dari {Path(source).name}...")
+            totals: dict = {}
+            total_rows = 0
+            for i, path in enumerate(files, 1):
+                if not self.is_processing:
+                    break
+                img = cv2.imread(str(path))
+                if img is None:
+                    continue
+                _, tracked, info = pipeline.process_frame(img, timestamp=0.0)
+                total_rows += info["tracked_count"]
+                for t in tracked:
+                    totals[t["class_name"]] = totals.get(t["class_name"], 0) + 1
+                if i % 5 == 0 or i == len(files):
+                    self._push_info(
+                        f"Progres   : {i}/{len(files)}\n"
+                        f"Kendaraan terdeteksi (per track): {total_rows}\n"
+                        f"Per kelas : {totals}"
+                    )
+            self._push_done(
+                f"Batch Selesai\n{'=' * 32}\n"
+                f"Gambar      : {len(files)}\n"
+                f"Kendaraan   : {total_rows} (jumlah track, BUKAN kendaraan unik)\n"
+                f"Per kelas   :\n" + _fmt_counts(totals)
+                + "\nSetiap gambar dihitung terpisah - tidak ada lintasan, "
+                  "jadi tidak ada penghitungan dual-line."
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._push_error(str(exc))
+        finally:
+            self._push_stopped()
+
+    # ------------------------------------------------------------------
+    # Handler tombol (MAIN THREAD)
+    # ------------------------------------------------------------------
+
+    def _run_detection(self) -> None:
+        source = self.source_path.get().strip()
+        if not source:
+            messagebox.showerror("Error", "Pilih file gambar, video, atau folder dulu.")
+            return
+        path = Path(source)
+        if path.is_dir():
+            self._spawn("_directory_worker", source=source)
+        elif path.suffix.lower() in VIDEO_EXTS:
+            self._spawn("_stream_worker", kind="video", source=source, save_video=True)
+        elif path.suffix.lower() in IMAGE_EXTS:
+            self._spawn("_image_worker", source=source)
+        else:
+            messagebox.showerror("Error", f"Format tidak didukung: {path.suffix}")
+
+    def _run_webcam(self) -> None:
+        self._spawn("_stream_worker", kind="webcam", source=0)
+
+    def _run_cctv(self) -> None:
+        url = self.rtsp_url.get().strip()
+        if not url:
+            messagebox.showerror("Error", "Masukkan RTSP URL.")
+            return
+        self._spawn("_stream_worker", kind="cctv", source=url)
+
+    def _stop_processing(self) -> None:
+        self.is_processing = False
+        self._update_status("Menghentikan...")
+
+    def _on_close(self) -> None:
+        self.is_processing = False
+        self.root.destroy()
+
+    # ------------------------------------------------------------------
+    # Jembatan worker -> main thread
+    # ------------------------------------------------------------------
+
+    def _queue_frame(self, frame, info: dict, pipeline) -> None:
+        """Masukkan frame terbaru ke queue; buang yang tertinggal (no backlog)."""
+        payload = {
+            "kind": "frame",
+            "frame": frame,
+            "info": info,
+            "counts": pipeline.counter.get_count_summary(),
+        }
+        try:
+            self._frame_queue.put_nowait(payload)
+        except queue.Full:
+            try:  # buang frame tertua, simpan yang paling baru
+                self._frame_queue.get_nowait()
+                self._frame_queue.put_nowait(payload)
+            except (queue.Empty, queue.Full):
+                pass
+
+    def _push_info(self, text: str) -> None:
+        self._pending["info"] = text
+
+    def _push_done(self, text: str) -> None:
+        self._pending["done"] = text
+
+    def _push_error(self, text: str) -> None:
+        self._pending["error"] = text
+
+    def _push_stopped(self) -> None:
+        self._pending["stopped"] = True
+
+    def _drain_queue(self) -> None:
+        """
+        Dipanggil berulang dari main thread oleh ``root.after``.
+
+        Satu-satunya tempat yang menyentuh widget. Dijadwalkan ulang supaya
+        tidak membeku kalau worker sedang sibuk.
+        """
+        try:
+            while True:
+                payload = self._frame_queue.get_nowait()
+                if payload.get("kind") == "frame":
+                    self._render_frame(payload)
+        except queue.Empty:
+            pass
+        except Exception:  # noqa: BLE001
+            pass
+
+        if "info" in self._pending:
+            self._update_info(self._pending.pop("info"))
+        if "done" in self._pending:
+            self._update_results(self._pending.pop("done"))
+            self._update_status("Selesai")
+        if "error" in self._pending:
+            err = self._pending.pop("error")
+            self._update_info(f"ERROR:\n{err}")
+            self._update_status(f"Error: {err}")
+            messagebox.showerror("Error", err)
+        if self._pending.pop("stopped", False):
+            self._set_running(False)
+
+        self.root.after(30, self._drain_queue)
+
+    def _render_frame(self, payload: dict) -> None:
+        """Konversi BGR -> PhotoImage di main thread, lalu tampilkan."""
+        frame = payload["frame"]
+        info = payload["info"]
+        counts = payload["counts"]
 
         display_w = self.display_label.winfo_width()
         display_h = self.display_label.winfo_height()
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
         if display_w > 1 and display_h > 1:
             pil_img.thumbnail((display_w, display_h), Image.Resampling.LANCZOS)
 
-        tk_img = ImageTk.PhotoImage(pil_img)
-        self.display_label.config(image=tk_img, text="")
-        self.display_label.image = tk_img
+        self._tk_img = ImageTk.PhotoImage(pil_img)
+        self.display_label.config(image=self._tk_img, text="")
 
-    def _display_cv_image(self, cv_img):
-        """Display OpenCV image (thread-safe)."""
-        rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(rgb)
-        pil_img = pil_img.resize((640, 480), Image.Resampling.LANCZOS)
-        tk_img = ImageTk.PhotoImage(pil_img)
+        self.fps_label.config(text=f"FPS: {info['fps']:.1f}")
+        # AngkaKendaraan yang ditampilkan adalah hitungan per track,
+        # bukan jumlah deteksi di frame ini.
+        self.count_label.config(text=f"Kendaraan: {counts['total']}")
 
-        self.root.after(0, lambda: self._update_display_label(tk_img))
+    def _update_status(self, text: str) -> None:
+        self.status_label.config(text=text)
 
-    def _update_display_label(self, tk_img):
-        """Update display label (main thread)."""
-        self.display_label.config(image=tk_img, text="")
-        self.display_label.image = tk_img
+    def _update_info(self, text: str) -> None:
+        self.info_text.delete(1.0, tk.END)
+        self.info_text.insert(tk.END, text)
 
-    def _stop_processing(self):
-        """Stop processing."""
-        self.is_processing = False
-        self._update_status("Stopping...")
-
-    def _update_status(self, text):
-        """Update status bar."""
-        self.root.after(0, lambda: self.status_label.config(text=text))
-
-    def _update_info(self, text):
-        """Update info text."""
-        def _update():
-            self.info_text.delete(1.0, tk.END)
-            self.info_text.insert(tk.END, text)
-        self.root.after(0, _update)
-
-    def _update_results(self, text):
-        """Update results text."""
-        def _update():
-            self.results_text.delete(1.0, tk.END)
-            self.results_text.insert(tk.END, text)
-        self.root.after(0, _update)
+    def _update_results(self, text: str) -> None:
+        self.results_text.delete(1.0, tk.END)
+        self.results_text.insert(tk.END, text)
 
 
-def main():
+def _fmt_counts(counts: dict) -> str:
+    if not counts:
+        return "  (tidak ada)\n"
+    return "".join(f"  {name:6s}: {n}\n" for name, n in sorted(counts.items()))
+
+
+def _fmt_object_list(tracked) -> str:
+    if not tracked:
+        return "\nTidak ada kendaraan terdeteksi.\n"
+    lines = ["\nObjek terdeteksi:\n"]
+    for t in tracked:
+        lines.append(f"  #{t['track_id']} {t['class_name']} "
+                     f"conf={t['confidence']:.2f} hits={t['hits']}\n")
+    return "".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="GUI deteksi kendaraan (Tkinter)")
+    parser.add_argument("--config", default=None,
+                        help="Path config YAML (default: config/config.yaml)")
+    parser.add_argument("--source", default=None,
+                        help="Isi field sumber otomatis (gambar/video/RTSP)")
+    parser.add_argument("--list-sources", action="store_true",
+                        help="Tampilkan daftar video yang tersedia lalu keluar")
+    args = parser.parse_args()
+
+    if args.list_sources:
+        from utils.paths import ROOT
+        found = []
+        for pattern in ("*.mp4", "*.avi", "*.mov", "*.mkv"):
+            found.extend(sorted(ROOT.rglob(pattern)))
+        print("=== VIDEO DI PROJECT ROOT ===")
+        if not found:
+            print("  (tidak ada video)")
+        for p in found:
+            print(f"  {p.relative_to(ROOT)}")
+        return 0
+
+    if args.config:
+        global _CONFIG_OVERRIDE
+        _CONFIG_OVERRIDE = args.config
+
     root = tk.Tk()
-    app = VehicleDetectionGUI(root)
+    gui = VehicleDetectionGUI(root)
+    if args.source:
+        gui.source_path.set(args.source)
     root.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

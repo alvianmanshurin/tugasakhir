@@ -184,8 +184,22 @@ def discover_cctv(ip, user="admin", password="admin123", port=554):
     return None
 
 
-def save_config(url, output_path="config/cctv.yaml"):
-    """Simpan URL CCTV ke file konfigurasi."""
+def save_config(url, output_path=None):
+    """
+    Simpan URL CCTV ke file konfigurasi.
+
+    Path relatif di-resolve ke root proyek, bukan ke folder tempat perintah
+    dijalankan. Kalau dijalankan dari luar root, file ``config/cctv.yaml``
+    akan tercipta di tempat yang tidak bisa ditemukan GUI.
+    """
+    from utils.paths import ROOT
+
+    if output_path is None:
+        output_path = ROOT / "config" / "cctv.yaml"
+    output_path = Path(output_path)
+    if not output_path.is_absolute():
+        output_path = ROOT / output_path
+
     config = {
         "cctv": {
             "rtsp_url": url,
@@ -193,30 +207,72 @@ def save_config(url, output_path="config/cctv.yaml"):
         }
     }
 
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        yaml.dump(config, f, default_flow_style=False)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
     print(f"\n[OK] Konfigurasi tersimpan di: {output_path}")
+    return str(output_path)
 
 
-def run_detection(url, output_path=None):
-    """Jalankan deteksi kendaraan pada stream CCTV."""
-    from detect_with_tracking import VehicleDetectionPipeline, load_config
+def run_detection(url, output_path=None, show=True, save_db=False,
+                  max_frames=None, config_path=None):
+    """
+    Jalankan deteksi kendaraan pada stream CCTV.
 
-    config = load_config()
-    model_path = "D:/KULIAH/Tugas Akhir/tugasakhir/runs/detect/models/vehicle_detection/weights/best.pt"
+    Memakai ``VehiclePipeline`` yang sama dengan CLI dan GUI supaya
+    track_id, ROI, dan counter konsisten. Stream RTSP sering putus
+    (``cap.read()`` mengembalikan False) sehingga di bawah ini ada loop
+    reconnect; tanpa itu, satu koneksi yang putus menghentikan
+    penghitungan permanen.
+    """
+    from pipeline import VehiclePipeline
+    from utils.paths import load_config
 
-    pipeline = VehicleDetectionPipeline(config, model_path=model_path)
+    config = load_config(config_path) if config_path else load_config()
 
     print(f"\n[RUN] Memulai deteksi pada: {url}")
     print("[RUN] Tekan 'q' untuk berhenti\n")
 
-    pipeline.process_video(
-        source=url,
-        output_path=output_path,
-        show=True,
-    )
+    pipeline = VehiclePipeline(config)
+    reconnect_delay = float(
+        config.get("cctv", {}).get("reconnect_delay", 3.0))
+    max_retries = int(config.get("cctv", {}).get("max_retries", 10))
+
+    retries = 0
+    while True:
+        try:
+            summary = pipeline.process_video(
+                source=url, output_path=output_path, show=show,
+                max_frames=max_frames, save_db=save_db,
+            )
+            # Stream berakhir normal (server menutup koneksi).
+            if max_frames is not None:
+                break
+            retries = 0
+        except (RuntimeError, KeyboardInterrupt) as exc:
+            if isinstance(exc, KeyboardInterrupt):
+                print("\n[INFO] Dihentikan pengguna.")
+                break
+            retries += 1
+            if max_retries and retries > max_retries:
+                print(f"[ERROR] Gagal {retries}x berturut-turut, berhenti: {exc}")
+                return None
+            print(f"[WARN] Koneksi putus ({exc}). Reconnect dalam "
+                  f"{reconnect_delay:.0f}s [{retries}/{max_retries or '∞'}]")
+            pipeline.reset()
+            time.sleep(reconnect_delay)
+            continue
+        break
+
+    if summary:
+        print("\nRingkasan CCTV:")
+        for key in ("frames", "total_detections", "total_tracked_rows",
+                    "total_counted", "fps"):
+            if key in summary:
+                print(f"  {key:20s} {summary[key]}")
+        print(f"  {'counts':20s} {summary.get('counts', {})}")
+    return summary
 
 
 def main():
@@ -232,6 +288,10 @@ def main():
     parser.add_argument("--prefix", type=str, default="192.168.1", help="IP prefix untuk scan")
     parser.add_argument("--output", type=str, default=None, help="Output video path")
     parser.add_argument("--no-show", action="store_true", help="Tidak tampilkan preview")
+    parser.add_argument("--save-db", action="store_true",
+                        help="Simpan hasil deteksi ke database")
+    parser.add_argument("--max-frames", type=int, default=None,
+                        help="Batas frame (untuk uji cepat)")
     args = parser.parse_args()
 
     if args.action == "scan":
@@ -240,34 +300,39 @@ def main():
     elif args.action == "test":
         if not args.url:
             print("[ERROR] URL harus diisi! Contoh: --url rtsp://admin:pass@192.168.1.100:554/stream1")
-            return
+            return 1
         test_rtsp(args.url, show=not args.no_show)
+        return 0
 
     elif args.action == "discover":
         if not args.ip:
             print("[ERROR] IP harus diisi! Contoh: --ip 192.168.1.100")
-            return
+            return 1
         url = discover_cctv(args.ip, user=args.user, password=args.password, port=args.port)
         if url:
             save_config(url)
+            return 0
+        return 1
 
     elif args.action == "run":
         url = args.url
         if not url:
-            # Coba load dari config
-            config_path = "config/cctv.yaml"
-            if os.path.exists(config_path):
-                with open(config_path) as f:
-                    cfg = yaml.safe_load(f)
-                url = cfg.get("cctv", {}).get("rtsp_url")
+            from utils.paths import ROOT
+            config_path = ROOT / "config" / "cctv.yaml"
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                url = (cfg.get("cctv") or {}).get("rtsp_url")
                 if url:
                     print(f"[INFO] URL dari config: {url}")
 
         if not url:
             print("[ERROR] URL harus diisi atau simpan config dulu dengan --action discover")
-            return
+            return 1
 
-        run_detection(url, output_path=args.output)
+        run_detection(url, output_path=args.output, show=not args.no_show,
+                      save_db=args.save_db, max_frames=args.max_frames)
+        return 0
 
     else:
         # Menu interaktif
@@ -309,16 +374,22 @@ Pilihan:
         elif choice == "4":
             url = input("URL RTSP: ").strip()
             if url:
-                run_detection(url)
+                run_detection(url, show=not args.no_show, save_db=args.save_db,
+                              max_frames=args.max_frames)
 
         elif choice == "5":
             path = input("Path video: ").strip()
             if path:
-                run_detection(path)
+                run_detection(path, show=not args.no_show, save_db=args.save_db,
+                              max_frames=args.max_frames)
 
         elif choice == "6":
             print("Selesai.")
+            return 0
+
+        return 0
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

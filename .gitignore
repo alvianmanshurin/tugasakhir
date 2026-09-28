@@ -23,8 +23,10 @@ build/
 data/raw/*
 data/annotated/images/train/*
 data/annotated/images/val/*
+data/annotated/images/test/*
 data/annotated/labels/train/*
 data/annotated/labels/val/*
+data/annotated/labels/test/*
 !data/annotated/images/.gitkeep
 !data/annotated/labels/.gitkeep
 !data/raw/.gitkeep

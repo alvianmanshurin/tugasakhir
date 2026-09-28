@@ -4,19 +4,19 @@ Inferensi ringan untuk Intel i3-1115G4, 8GB RAM
 """
 
 import os
+import sys
 import cv2
 import yaml
 import argparse
 import time
 import numpy as np
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from ultralytics import YOLO
 
-
-def load_config(config_path="config/config.yaml"):
-    """Memuat file konfigurasi YAML dari path yang diberikan."""
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+from utils.paths import get_model_path, load_config
 
 
 class LightweightDetector:
@@ -30,26 +30,30 @@ class LightweightDetector:
     - Pengukuran FPS (Frames Per Second)
     """
 
-    def __init__(self, config):
+    def __init__(self, config, model_path=None):
         """
         Inisialisasi detektor ringan.
-        
+
         Args:
             config: dict konfigurasi dari config.yaml
+            model_path: override path model .pt (opsional)
         """
         self.config = config
         self.model_cfg = config["model"]
         self.det_cfg = config["detection"]
         self.class_names = config["dataset"]["names"]
 
-        # Memuat model YOLOv11
-        model_path = "models/vehicle_detection/weights/best.pt"
-        if not os.path.exists(model_path):
-            model_path = self.model_cfg["architecture"]
-            print(f"[INFO] Menggunakan model pretrained: {model_path}")
-
-        print(f"[INFO] Memuat model: {model_path}")
-        self.model = YOLO(model_path)
+        # Memuat model lewat resolver config.
+        #
+        # Versi lama: kalau "models/vehicle_detection/weights/best.pt" tidak
+        # ada, diam-diam pakai model_cfg["architecture"] (yolo11n.pt COCO,
+        # 80 kelas). Hasilnya: 4 kelas proyek dipetakan ke 80 kelas COCO,
+        # jadi "motor" jadi "miobile", dan semua hasil evaluasi tidak
+        # berlaku. Resolver di utils.paths tidak punya fallback seperti itu -
+        # kalau best.pt hilang, dia error dengan pesan jelas.
+        resolved = get_model_path(self.config, explicit=model_path)
+        print(f"[INFO] Memuat model: {resolved}")
+        self.model = YOLO(str(resolved))
 
         # Warna bounding box per kelas (BGR)
         self.colors = {
@@ -276,7 +280,7 @@ def main():
     parser.add_argument("--source", type=str, required=True,
                        help="Path gambar atau direktori")
     parser.add_argument("--model", type=str, default=None,
-                       help="Path model YOLOv11")
+                       help="Override path model .pt")
     parser.add_argument("--conf", type=float, default=None,
                        help="Ambang batas confidence")
     parser.add_argument("--no-save", action="store_true",
@@ -285,15 +289,22 @@ def main():
 
     config = load_config()
 
-    # Override konfigurasi dari command line
-    if args.model:
-        config["model"]["architecture"] = args.model
+    # Override konfigurasi dari command line.
+    # --model lewat ke LightweightDetector secara eksplisit, bukan dengan
+    # menulis ke config["model"]["architecture"]: key itu menunjuk starting
+    # point training (yolo11n.pt COCO), jadi menulis model proyek ke sana
+    # akan membuat semua run berikutnya memakai bobot yang salah.
     if args.conf:
         config["model"]["confidence_threshold"] = args.conf
 
-    detector = LightweightDetector(config)
+    try:
+        detector = LightweightDetector(config, model_path=args.model)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[ERROR] {exc}")
+        return 1
     detector.detect(args.source, save=not args.no_save)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

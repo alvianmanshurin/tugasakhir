@@ -1,60 +1,127 @@
 """
-Script untuk batch processing gambar
+Batch processing gambar (deteksi + annotasi) untuk sekumpulan file.
+
+Versi lama file ini tidak punya CLI (``main()`` hanya print), memakai
+``models/yolov8n_vehicle/weights/best.pt`` yang tidak pernah ada, dan
+menghitung label kelas dari konstanta yang bisa tidak cocok dengan model.
+
+Sekarang memakai ``VehiclePipeline`` supaya:
+- model diambil dari config / ``runs/detect/models/...``,
+- threshold sama dengan evaluasi (0.25/0.5),
+- letterbox, bukan resize distort,
+- ROI ikut diterapkan kalau diaktifkan.
 """
-import os
-import cv2
+
+import argparse
 import sys
 from pathlib import Path
-from ultralytics import YOLO
 
-def batch_process(input_dir, output_dir, model_path="models/yolov8n_vehicle/weights/best.pt"):
-    """Proses batch gambar"""
-    model = YOLO(model_path)
-    CLASS_NAMES = {0: 'motor', 1: 'mobil', 2: 'bus', 3: 'truk'}
-    COLORS = {'motor': (255, 0, 0), 'mobil': (0, 255, 0), 'bus': (0, 0, 255), 'truk': (255, 255, 0)}
-    
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import cv2
+
+from pipeline import VehiclePipeline
+from utils.paths import load_config
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+def list_images(directory: Path):
+    return sorted(p for p in directory.iterdir() if p.suffix.lower() in IMAGE_EXTS)
+
+
+def batch_process(input_dir, output_dir, config=None, model_path=None,
+                  recursive=False, prefix="detected_", save_labels=False):
+    """
+    Proses semua gambar di ``input_dir`` dan simpan gambar ber-annotasi.
+
+    Memakai ``VehiclePipeline.process_image()`` - tracking dilewati karena
+    tiap gambar berdiri sendiri, dan ``ObjectTracker`` hanya mengonfirmasi
+    track setelah beberapa frame berturut-turut sehingga lewat
+    ``process_frame()`` setiap gambar akan menghasilkan 0 box.
+    """
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    images = list(input_dir.glob("*.jpg")) + list(input_dir.glob("*.png"))
-    
-    print(f"Memproses {len(images)} gambar...")
-    
+
+    if not input_dir.is_dir():
+        raise NotADirectoryError(f"Bukan direktori: {input_dir}")
+
+    if recursive:
+        images = sorted(p for p in input_dir.rglob("*") if p.suffix.lower() in IMAGE_EXTS)
+    else:
+        images = list_images(input_dir)
+
+    if not images:
+        raise FileNotFoundError(f"Tidak ada gambar di {input_dir}")
+
+    pipeline = VehiclePipeline(config, model_path=model_path)
+    print(f"[INFO] {len(images)} gambar -> {output_dir}")
+
+    label_dir = output_dir / "labels"
+    if save_labels:
+        label_dir.mkdir(parents=True, exist_ok=True)
+
+    total_boxes = 0
     for idx, img_path in enumerate(images, 1):
         img = cv2.imread(str(img_path))
         if img is None:
+            print(f"[PERINGATAN] Gagal baca: {img_path}")
             continue
-        
-        results = model(img, conf=0.35, iou=0.45, verbose=False)
-        
-        result_img = img.copy()
-        for r in results:
-            if r.boxes is not None:
-                for box in r.boxes:
-                    cls_id = int(box.cls[0])
-                    conf = float(box.conf[0])
-                    xyxy = box.xyxy[0].tolist()
-                    if cls_id in CLASS_NAMES:
-                        cls_name = CLASS_NAMES[cls_id]
-                        x1, y1, x2, y2 = [int(c) for c in xyxy]
-                        color = COLORS[cls_name]
-                        cv2.rectangle(result_img, (x1, y1), (x2, y2), color, 2)
-                        label = f'{cls_name} {conf:.2f}'
-                        cv2.putText(result_img, label, (x1, y1 - 10),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-        
-        output_path = output_dir / f"detected_{img_path.name}"
-        cv2.imwrite(str(output_path), result_img)
-        
-        if idx % 10 == 0:
-            print(f"  Progress: {idx}/{len(images)}")
-    
-    print(f"Selesai! Hasil tersimpan di: {output_dir}")
 
-def main():
-    print("=== BATCH PROCESSING ===")
-    # Tambahkan kode sesuai kebutuhan
+        annotated, dets, info = pipeline.process_image(img)
+        total_boxes += len(dets)
+
+        out_path = output_dir / f"{prefix}{img_path.name}"
+        cv2.imwrite(str(out_path), annotated)
+
+        if save_labels and dets:
+            h, w = img.shape[:2]
+            lines = []
+            for t in dets:
+                x1, y1, x2, y2 = t["bbox"]
+                xc = ((x1 + x2) / 2) / w
+                yc = ((y1 + y2) / 2) / h
+                bw = (x2 - x1) / w
+                bh = (y2 - y1) / h
+                lines.append(f"{t['class_id']} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}")
+            (label_dir / f"{img_path.stem}.txt").write_text(
+                "\n".join(lines) + "\n", encoding="utf-8")
+
+        if idx % 20 == 0 or idx == len(images):
+            print(f"  [{idx}/{len(images)}] {total_boxes} box total")
+
+    print(f"[OK] Selesai. {total_boxes} box. Hasil: {output_dir}")
+    return {"images": len(images), "boxes": total_boxes, "output_dir": str(output_dir)}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Batch processing gambar dengan VehiclePipeline")
+    parser.add_argument("--input-dir", required=True, help="Direktori gambar")
+    parser.add_argument("--output-dir", required=True, help="Direktori output")
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--recursive", action="store_true",
+                        help="Cari gambar di subfolder juga")
+    parser.add_argument("--prefix", default="detected_",
+                        help="Prefix nama file output")
+    parser.add_argument("--save-labels", action="store_true",
+                        help="Sekalian simpan label YOLO untuk verifikasi manual")
+    args = parser.parse_args()
+
+    try:
+        batch_process(
+            args.input_dir, args.output_dir,
+            config=load_config(args.config) if args.config else load_config(),
+            model_path=args.model, recursive=args.recursive,
+            prefix=args.prefix, save_labels=args.save_labels,
+        )
+    except (NotADirectoryError, FileNotFoundError) as exc:
+        print(f"[ERROR] {exc}")
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

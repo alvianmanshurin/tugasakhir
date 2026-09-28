@@ -2,6 +2,17 @@
 # Sistem Perhitungan Jumlah Kendaraan Bermotor
 # Studi Kasus: UPT K3L ITERA
 
+> **Catatan status diagram ini.** Alur di bawah masih menggambarkan kondisi
+> awal proyek. Angka metrik di dalamnya (mAP50 71.6%, 64.7%, dan seterusnya)
+> berasal dari evaluation report lama yang tidak bisa direproduksi ulang
+> karena `evaluate.py` saat itu salah membaca `save_dir` dan nama file kurva.
+> **Jangan mengutip angka itu.**
+>
+> Untuk alur dan metrik yang benar, lihat `WORKFLOW.md`. Ringkasan terbaru:
+> split 564 train / 71 val / 70 test, dan hasil `python src/evaluate.py --task all`
+> adalah mAP50 0.3850, mAP50-95 0.2993, Precision 0.6027, Recall 0.4121,
+> F1 0.4850, FPS 32.9.
+
 ---
 
 ## 1. Main Workflow (Updated)
@@ -10,7 +21,7 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        VEHICLE DETECTION SYSTEM                             │
 │                    UPT K3L ITERA - TUGAS AKHIR                              │
-│                    Status: [COMPLETE]                                       │
+│                    Status: [PIPELINE SELESAI, MODEL PERLU DIPERBAIKAN]     │
 └─────────────────────────────────────────────────────────────────────────────┘
 
     ┌──────────────┐
@@ -29,8 +40,9 @@
            ▼
     ┌──────────────┐
     │   SPLIT      │
-    │  TRAIN/VAL   │  ← 80% train, 20% val
-    │ (564/141)    │
+    │ TRAIN/VAL/   │  ← 564 train, 71 val, 70 test
+    │    TEST      │     (split lama: acak per gambar, bukan group-aware)
+    │(564/71/70)   │
     └──────┬───────┘
            │
            ▼
@@ -43,15 +55,15 @@
            ▼
     ┌──────────────┐
     │   TRAIN      │
-    │   MODEL      │  ← YOLOv11n (39 epochs)
-    │  (30-40 min) │     mAP50: 71.6% (best)
+    │   MODEL      │  ← YOLOv11n, 50 epoch, CPU
+    │  (30-40 min) │     output: runs/detect/models/vehicle_detection/
     └──────┬───────┘
            │
            ▼
     ┌──────────────┐
-    │  EVALUATE    │  ← model.val()
-    │  mAP50: 64.7%│     Precision: 62.2%
-    │  Recall: 76.1%│    FPS: ~32
+    │  EVALUATE    │  ← evaluate.py --task all
+    │ mAP50: 38.5% │     Precision: 60.3%, Recall: 41.2%
+    │ (terukur)    │    FPS: 32.9
     └──────┬───────┘
            │
            ▼
@@ -306,7 +318,9 @@
     └─────────────────────────────────────────────────────┘
 
     ┌─────────────────────────────────────────────────────┐
-    │              FINAL METRICS                          │
+    │  METRICS LAMA - TIDAK DAPAT DIREPRODUKSI           │
+    │  Lihat outputs/evaluation/evaluation_report.json    │
+    │  untuk angka yang benar.                            │
     │  ┌─────────────────────────────────────────────┐    │
     │  │  mAP50:        71.6%  (best at epoch 39)    │    │
     │  │  mAP50-95:     54.1%                        │    │
@@ -321,11 +335,12 @@
 
 ---
 
-## 6. Evaluation Results
+## 6. Evaluation Results (angka lama - ganti dengan report terbaru)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    EVALUATION RESULTS                                       │
+│       EVALUATION RESULTS (ANGKA LAMA - SUDAH TIDAK VALID)                   │
+│       sumber: evaluation report lama, evaluate.py lama salah baca save_dir  │
 └─────────────────────────────────────────────────────────────────────────────┘
 
     ┌─────────────────────────────────────────────────────┐
@@ -352,6 +367,23 @@
     │  ─────────────────────────────────────────────────  │
     │  ALL       64.7%    76.1%     62.2%       253       │
     │                                                     │
+    └─────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────┐
+    │  PER-CLASS TERUKUR (evaluate.py --task all)         │
+    │                                                     │
+    │  Class     AP50     AP50-95   Precision  Recall  F1  │
+    │  ─────────────────────────────────────────────────  │
+    │  mobil     0.6922   0.5597    0.9184     0.7031  0.7965│
+    │  motor     0.4529   0.3054    0.6923     0.5455  0.6102│
+    │  truk      0.3950   0.3322    0.8000     0.4000  0.5333│
+    │  bus       0.0000   0.0000    0.0000     0.0000  0.0000│
+    │  ─────────────────────────────────────────────────  │
+    │  ALL       0.3850   0.2993    0.6027     0.4121  0.4850│
+    │                                                     │
+    │  Catatan: bus 0.0 karena hanya 10 instance bus di   │
+    │  train (1.19%). Prioritas: tambah anotasi bus,     │
+    │  lalu split group-aware, lalu training ulang.       │
     └─────────────────────────────────────────────────────┘
 
     ┌─────────────────────────────────────────────────────┐
@@ -438,13 +470,12 @@ tugasakhir/
 │    │   ├── TENGAH-9/            (171 frames)
 │    │   └── merged/              (705 frames)
 │    │
-│    └── annotated/               ← Labeled dataset
-│        ├── images/
-│        │   ├── train/           (564 images)
-│        │   └── val/             (141 images)
-│        └── labels/
-│            ├── train/           (387 labeled)
-│            └── val/             (110 labeled)
+    │    └── annotated/               ← Labeled dataset
+    │        ├── images/
+    │        │   ├── train/           (564 images)
+    │        │   ├── val/             (71 images)
+    │        │   └── test/            (70 images)
+    │        └── labels/             (1:1 dengan images, label kosong = background)
 │
 ├─── src/
 │    ├── auto_annotate.py         ★ NEW - Auto-annotation
@@ -503,30 +534,38 @@ tugasakhir/
     ═══════════════════════════════════════════════════════════
     [████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░]
     - Extract frames dari video (705 frames)
-    - Split train/val (564/141)
+    - Split train/val/test (564/71/70, split lama acak per gambar)
     - Auto-annotate dengan YOLOv11 COCO (1097 boxes)
     ✓ SELESAI
 
     Minggu 2: Training & Evaluation
     ═══════════════════════════════════════════════════════════
     [████████████████████████████████████████░░░░░░░░░░░░░░░░]
-    - Training YOLOv11n (39 epochs, ~30 menit)
-    - Evaluasi model (mAP50: 64.7%)
-    - Buat ROI filter (20m boundary)
+    - Training YOLOv11n (50 epoch, ~30 menit, CPU)
+    - Evaluasi model (mAP50 terukur 38.5%, Precision 60.3%, Recall 41.2%)
+    - Buat ROI filter (boundary trapezoid 1920x1080)
     - Buat object tracker (ByteTrack)
     ✓ SELESAI
 
     Minggu 3: Pipeline & Testing
     ═══════════════════════════════════════════════════════════
-    [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░████████████]
-    - Integrate ROI + Tracking ke pipeline
-    - Test dengan video sample
-    - Test dengan webcam real-time
-    - Kalibrasi ROI boundary
+    [████████████████████████████████████████████████████████████]
+    - Pipeline terunifikasi (deteksi → ROI → tracking → counting)
+    - Database + GUI + CCTV connector
+    - Tes otomatis 256 assertion
+    ✓ SELESAI
 
-    Minggu 4: Deployment
+    Minggu 4: Perbaikan Kualitas Model
     ═══════════════════════════════════════════════════════════
     [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░████████]
+    - Tambah anotasi bus (sekarang hanya 10 instance di train)
+    - Regenerate split group-aware (blok 30 frame)
+    - Training ulang + evaluasi ulang
+    - Kalibrasi ROI dengan rekaman gerbang asli
+
+    Minggu 5: Deployment
+    ═══════════════════════════════════════════════════════════
+    [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]
     - Deploy di gate UPT K3L ITERA
     - Validasi di lapangan
     - Dokumentasi akhir
@@ -560,10 +599,11 @@ tugasakhir/
     │  │  Image Size: 416x416                        │    │
     │  │  Batch Size: 4                              │    │
     │  │  Device: CPU                                │    │
-    │  │  Epochs: 39 (early stop)                    │    │
-    │  │  Training Time: ~30 minutes                 │    │
-    │  │  Inference FPS: ~31 FPS                     │    │
-    │  │  ROI: 20m road boundary                     │    │
+    │  │  Epochs: 50                                 │    │
+    │  │  Training Time: ~30 menit                   │    │
+    │  │  Inference FPS: 32.9 (deteksi saja)          │    │
+    │  │  Pipeline FPS: 16-22 (ROI+tracking)         │    │
+    │  │  ROI: trapezoid 1920x1080 (~13.8% area)     │    │
     │  │  Tracker: ByteTrack-inspired                │    │
     │  └─────────────────────────────────────────────┘    │
     └─────────────────────────────────────────────────────┘

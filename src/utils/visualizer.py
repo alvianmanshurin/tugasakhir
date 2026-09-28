@@ -6,32 +6,6 @@ import numpy as np
 from pathlib import Path
 
 
-def draw_detections a sentence the the lemon the the the file exactly symptom the the from the the confidence bat
-
-Return, the bite any the the the the, unless the the obligatory the minimal the the the // notice the the the the, the the. character the the, command a,FormData the the evidence.., the the the to. the there the the must;
- a
-_d Bon the the for the the specific.
-, the the the the.
-
- the theV [ make ourselves put, the... the the is the
- we parallel return provide maximum text
-
-.
- the
- providesConflict冲突groupMask writeparameter default.
-
-2. **`quick_start.py`**:
-   - Combine system check with install and setup functions
-   - Fix main() to run all steps</think><tool_call>
-<function=write>
-<parameter=content>"""
-Modul visualisasi untuk deteksi kendaraan
-"""
-import cv2
-import numpy as np
-from pathlib import Path
-
-
 def draw_detections(frame, detections, class_names=None, colors=None):
     """Gambar hasil deteksi pada frame"""
     if class_names is None:
@@ -49,7 +23,8 @@ def draw_detections(frame, detections, class_names=None, colors=None):
 
         cv2.rectangle(result, (x1, y1), (x2, y2), color, 2)
         label = f'{cls_name} {conf:.2f}'
-        cv2.putText(result, label, (x1, y1 - 10),
+        label_y = y1 - 10 if y1 > 12 else y2 + 18
+        cv2.putText(result, label, (x1, label_y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
     return result
@@ -79,17 +54,19 @@ def draw_hud(frame, fps, counts, total_counted):
     """Gambar heads-up display"""
     h, w = frame.shape[:2]
 
-    cv2.rectangle(frame, (0, 0), (w, 90), (0, 0, 0), -1)
+    rows = [(name, count) for name, count in counts.items() if count > 0]
+    panel_h = 50 + 20 * max(len(rows), 1)
+
+    cv2.rectangle(frame, (0, 0), (w, panel_h), (0, 0, 0), -1)
 
     cv2.putText(frame, f'FPS: {fps:.1f}', (10, 25),
                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
     y = 55
-    for name, count in counts.items():
-        if count > 0:
-            cv2.putText(frame, f'{name}: {count}', (10, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            y += 20
+    for name, count in rows:
+        cv2.putText(frame, f'{name}: {count}', (10, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        y += 20
 
     cv2.putText(frame, f'Counted: {total_counted}', (w - 180, 25),
                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
@@ -146,12 +123,15 @@ class Visualizer:
             (label_w, label_h), baseline = cv2.getTextSize(
                 label, cv2.FONT_HERSHEY_SIMPLEX, self.font_scale, self.font_thickness
             )
-            cv2.rectangle(result, (x1, y1 - label_h - 10), (x1 + label_w, y1), color, -1)
+            label_top = y1 - label_h - 10
+            if label_top < 0:
+                label_top = y1 + 2
+            cv2.rectangle(result, (x1, label_top), (x1 + label_w, label_top + label_h + 8), color, -1)
 
             cv2.putText(
                 result,
                 label,
-                (x1, y1 - 5),
+                (x1, label_top + label_h + 2),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 self.font_scale,
                 (255, 255, 255),
@@ -326,21 +306,29 @@ class Visualizer:
         h, w = frame.shape[:2]
 
         text = f"YOLO: {yolo_count} | Manual: {manual_count}"
-        diff = abs(yolo_count - manual_count)
         accuracy = (
             min(yolo_count, manual_count) / max(yolo_count, manual_count) * 100
             if max(yolo_count, manual_count) > 0
             else 100
         )
+        acc_text = f"Accuracy: {accuracy:.1f}%"
 
         (text_w, text_h), _ = cv2.getTextSize(
             text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
         )
+        (acc_w, acc_h), _ = cv2.getTextSize(
+            acc_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+        )
+
+        box_w = max(text_w, acc_w) + 20
+        box_x0 = max(0, w // 2 - box_w // 2)
+        box_x1 = min(w, box_x0 + box_w)
+        box_y1 = h - 60
 
         cv2.rectangle(
             frame,
-            (w // 2 - text_w // 2 - 10, h - 50),
-            (w // 2 + text_w // 2 + 10, h - 10),
+            (box_x0, box_y1 - text_h - acc_h - 20),
+            (box_x1, box_y1),
             (40, 40, 40),
             -1,
         )
@@ -348,7 +336,7 @@ class Visualizer:
         cv2.putText(
             frame,
             text,
-            (w // 2 - text_w // 2, h - 25),
+            (box_x0 + 10, box_y1 - acc_h - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (255, 255, 255),
@@ -357,11 +345,10 @@ class Visualizer:
         )
 
         acc_color = (0, 255, 0) if accuracy >= 90 else (0, 255, 255)
-        acc_text = f"Accuracy: {accuracy:.1f}%"
         cv2.putText(
             frame,
             acc_text,
-            (w // 2 - 50, h - 55),
+            (box_x0 + 10, box_y1 - 8),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
             acc_color,

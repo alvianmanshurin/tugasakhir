@@ -15,14 +15,24 @@ project:
 
 # Model Configuration - Using YOLOv11n (Nano) for CPU
 model:
-  # yolov11n = Nano (2.6M params) - TERBAIK untuk CPU/laptop rendah
-  # yolov11s = Small (9.4M params) - alternatif jika ingin lebih akurat
-  # yolov11m = Medium (20.1M params) - TIDAK direkomendasikan untuk laptop ini
-  architecture: "yolo11n.pt"
+  # yolo11n = Nano (2.6M params) - TERBAIK untuk CPU/laptop rendah
+  # yolo11s = Small (9.2M params) - alternatif jika ingin lebih akurat
+  # yolo11m = Medium (20.1M params) - TIDAK direkomendasikan untuk laptop ini
+  architecture: "yolo11n.pt"      # Bobot COCO, hanya untuk starting point training
+  # Path bobot hasil training (dihasilkan oleh src/train.py).
+  # Dipakai oleh evaluate/detect/gui/db - JANGAN diubah manual.
+  best_weights: "runs/detect/models/vehicle_detection/weights/best.pt"
+  # Folder tempat training menyimpan output
+  project_dir: "runs/detect/models/vehicle_detection"
   input_size: 416  # Dikurangi dari 640 untuk kecepatan di CPU
-  confidence_threshold: 0.5
+  confidence_threshold: 0.5   # Ambang "high" - track baru hanya dari deteksi ini
+  # Ambang "low" untuk rescue track yang hilang sebentar (terjebak, occlusion).
+  # PENTING: model.predict() harus dijalankan pada ambang TERENDAH ini,
+  # kalau tidak(low < high) cabang low-confidence tidak pernah terisi.
+  low_conf_threshold: 0.25
   iou_threshold: 0.45
   device: "cpu"  # Explicit CPU karena tidak ada CUDA
+  half: false     # CPU tidak mendukung fp16
 
 # Training Configuration - Optimized for CPU
 training:
@@ -49,6 +59,13 @@ training:
 
 # Augmentasi Configuration - OPTIMIZED FOR VEHICLE COUNTING
 # Fokus: Meningkatkan deteksi bus/truk + menjaga akurasi counting
+#
+# Only arguments VALID for ultralytics detection training are used.
+# `blur` and `grayscale` are NOT supported by ultralytics for the detection
+# task (classification only) - forcing them makes training crash with
+# "is not a valid YOLO argument". Low-light / camera-shake robustness is
+# handled by hsv_v (brightness), which is detection-native.
+# `erasing` is also a no-op for detection, so there is nothing to disable.
 augmentation:
   # === FLIP ===
   fliplr: 0.5           # Flip horizontal 50% (aman untuk kendaraan)
@@ -61,7 +78,7 @@ augmentation:
   # === COLOR / HSV ===
   hsv_h: 0.015          # Hue shift (0-1)
   hsv_s: 0.7            # Saturation (0-1)
-  hsv_v: 0.4            # Brightness (0-1) - penting untuk CCTV
+  hsv_v: 0.4            # Brightness (0-1) - robustness minim cahaya CCTV
 
   # === GEOMETRI ===
   degrees: 0.0          # Rotasi MATI (kamera fixed di gerbang)
@@ -70,23 +87,58 @@ augmentation:
   shear: 5.0            # Shear ±5° (simulasi sudut pandang kamera)
   perspective: 0.001    # Perspektif ringan (distorsi kamera)
 
-  # === KUALITAS ===
-  blur: 0.01            # Blur 1% (simulasi kamera goyang ringan)
-  erasing: 0.0          # Random Erasing MATI (jangan hapus bagian kendaraan!)
-  grayscale: 0.1        # Grayscale 10% (robustness minim cahaya)
-
   # === MATIKAN (berbahaya untuk counting) ===
   mixup: 0.0            # MixUp MATI (ganggu bounding box)
   copy_paste: 0.0       # Copy-Paste MATI (bisa duplikasi kendaraan)
-  crop_fraction: 1.0    # Full crop (jangan potong)
 
 # Dataset Configuration
 dataset:
-  yaml_path: "D:/KULIAH/Tugas Akhir/tugasakhir/data/dataset.yaml"
+  # Path relatif terhadap root project (src/utils/paths.py me-resolve ke absolut)
+  yaml_path: "data/dataset.yaml"
   train_images: "data/annotated/images/train"
   val_images: "data/annotated/images/val"
+  test_images: "data/annotated/images/test"
   train_labels: "data/annotated/labels/train"
   val_labels: "data/annotated/labels/val"
+  test_labels: "data/annotated/labels/test"
+
+  # Nama kelas - sumber kebenaran tunggal untuk mapping class id.
+  # Harus identik dengan data/dataset.yaml dan config/predefined_classes.txt
+  names:
+    0: motor
+    1: mobil
+    2: bus
+    3: truk
+
+  # Split grouping: frame video berurutan di-group per blok N frame sebelum
+  # diacak, supaya frame yang berdekatan tidak masuk train DAN val sekaligus
+  # (leakage temporal). 30 frame = 1 detik pada 30fps.
+  group_size: 30
+
+  # Asal video tiap frame di pool "merged".
+  #
+  # Pool merged_ berisi 705 frame hasil penggabungan 4 video, dan nomor urutnya
+  # berurutan tanpa tumpang tindih:
+  #   merged_00000..00173 = KIRI-7   (174 frame)
+  #   merged_00174..00354 = KIRI-9   (181 frame)
+  #   merged_00355..00533 = TENGAH-7 (179 frame)
+  #   merged_00534..00704 = TENGAH-9 (171 frame)
+  # Diverifikasi dengan pencocokan hash MD5 ke data/raw (705/705 cocok).
+  #
+  # Kenapa ini penting: blok 30 frame memotong batas antar video di 3 titik
+  # (blok 5, 11, 17), jadi frame dari dua kamera berbeda bisa berakhir di grup
+  # yang sama lalu masuk split yang sama. With video_ranges, grup dihitung
+  # per video sehingga batas antar kamera tidak pernah dilanggar.
+  #
+  # Format: nama video: [nomor_awal, nomor_akhir] (inklusif, berbasis nomor
+  # merged_). Kosongkan daftar (video_ranges: {}) untuk kembali ke perilaku
+  # blok tanpa batas video.
+  video_ranges:
+    KIRI-7: [0, 173]
+    KIRI-9: [174, 354]
+    TENGAH-7: [355, 533]
+    TENGAH-9: [534, 704]
+
   # Video source for frame extraction
   video_source: "D:/KULIAH/Tugas Akhir/Data video Tugas Akhir"
   video_files:
@@ -110,14 +162,19 @@ detection:
 # ROI Configuration (Region of Interest)
 roi:
   enabled: true
-  # Koordinat trapezoid ROI (disesuaikan dengan sudut kamera)
-  # Format: [x, y]
+  # Koordinat boundary ditulis pada resolusi REFERENSI di bawah, lalu
+  # otomatis di-rescale ke resolusi frame yang sedang diproses.
+  # Penting: frame video ITERA adalah 1920x1080.
+  reference_resolution:
+    width: 1920
+    height: 1080
+  # Format: [x, y] dalam koordinat reference_resolution
   boundary:
     top_left: [60, 497]      # Kiri atas
     top_right: [390, 484]    # Kanan atas
     bottom_left: [111, 1007] # Kiri bawah
     bottom_right: [979, 822] # Kanan bawah
-  min_bbox_height: 20        # Ukuran bbox minimum (px)
+  min_bbox_height: 20        # Ukuran bbox minimum (px pada resolusi frame)
   draw_roi: true             # Gambar area ROI di frame
 
 # Object Tracking Configuration (ByteTrack-inspired)
@@ -136,7 +193,10 @@ counting:
   line2_position: 0.75           # Garis 2 (bawah) - dalam ROI area
   direction: "both"              # "up", "down", atau "both"
   min_track_length: 3            # Frame minimum sebelum dihitung
-  max_lost_frames: 30            # Maks frame lintasan hilang
+  # Toleransi perpindahan (px pada resolusi reference) sebelum lintasan
+  # dianggap diam. Tanpa ini, satu frame jitter bisa salah menentukan arah.
+  min_displacement: 25
+  draw_lines: true            # Gambar garis 1 & 2 pada frame output
 
 # Evaluation Configuration
 evaluation:

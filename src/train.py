@@ -3,87 +3,126 @@ Script Training - DIOPTIMALKAN UNTUK LAPTOP LOW-END (CPU)
 Hardware: Intel i3-1115G4, 8GB RAM, Intel UHD Graphics
 """
 
-import os
-import yaml
-import argparse
 import time
 import psutil
 from pathlib import Path
 from ultralytics import YOLO
 
+import sys
 
-def load_config(config_path="config/config.yaml"):
-    """Memuat file konfigurasi YAML dari path yang diberikan."""
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from utils.paths import load_config, ROOT  # noqa: E402
+
+
+# Argumen augmentasi yang diteruskan ke ultralytics. Hanya key di sini yang
+# valid untuk task deteksi - blur/grayscale/erasing tidak didukung (lihat
+# config/config.yaml untuk penjelasan).
+AUGMENT_KEYS = (
+    "fliplr", "flipud", "mosaic",
+    "hsv_h", "hsv_s", "hsv_v",
+    "degrees", "translate", "scale", "shear", "perspective",
+    "mixup", "copy_paste",
+)
 
 
 def check_system_resources():
     """
     Mengecek sumber daya sistem yang tersedia sebelum training.
-    
-    Informasi yang dicek:
-    - Jumlah core CPU (fisik dan logis)
-    - Frekuensi CPU
-    - Total RAM dan yang tersedia
-    - Rekomendasi batch size berdasarkan RAM
-    
+
     Returns:
-        Dict berisi cpu_count, ram_gb, ram_available
+        Dict berisi cpu_count, ram_gb, ram_available, recommended_batch
     """
     print("\n" + "=" * 60)
     print("CEK SUMBER DAYA SISTEM")
     print("=" * 60)
 
-    # Info CPU
     cpu_count = psutil.cpu_count()
-    cpu_freq = psutil.cpu_freq()
     print(f"\n[CPU]")
     print(f"  Core fisik: {psutil.cpu_count(logical=False)}")
     print(f"  Core logis: {cpu_count}")
-    print(f"  Frekuensi maks: {cpu_freq.max:.0f} MHz" if cpu_freq else "  Frekuensi maks: N/A")
 
-    # Info RAM
     ram = psutil.virtual_memory()
     ram_gb = ram.total / (1024**3)
-    ram_available = ram.available / (1024**3)
     print(f"\n[RAM]")
     print(f"  Total: {ram_gb:.1f} GB")
-    print(f"  Tersedia: {ram_available:.1f} GB")
+    print(f"  Tersedia: {ram.available / (1024**3):.1f} GB")
     print(f"  Terpakai: {ram.percent}%")
 
-    # Rekomendasi
-    print(f"\n[REKOMENDASI]")
-    if ram_gb < 8:
-        print("  PERINGATAN: RAM < 8GB, gunakan batch_size=2")
-    elif ram_gb < 16:
-        print("  OK: 8GB RAM, gunakan batch_size=4")
-    else:
-        print("  OK: RAM cukup")
+    recommended_batch = recommend_batch(ram_gb)
+    print(f"\n[REKOMENDASI] batch_size={recommended_batch}")
 
     print("=" * 60)
 
     return {
         "cpu_count": cpu_count,
         "ram_gb": ram_gb,
-        "ram_available": ram_available,
+        "ram_available": ram.available / (1024**3),
+        "recommended_batch": recommended_batch,
     }
 
 
-def train_model(config):
+def recommend_batch(ram_gb: float) -> int:
+    """Batch size menurut RAM. Satu fungsi dipakai check + training."""
+    if ram_gb < 6:
+        return 2
+    if ram_gb < 16:
+        return 4
+    return 8
+
+
+def build_train_kwargs(config, batch=None, epochs=None):
+    """
+    Susun kwargs untuk ultralytics train() dari config.
+
+    Dipakai oleh train_model() dan resume_training() supaya keduanya
+    tidak mungkin berbeda setting.
+    """
+    cfg = config["training"]
+    aug_cfg = config.get("augmentation", {})
+    model_cfg = config["model"]
+
+    kwargs = {
+        "data": config["dataset"]["yaml_path"],
+        "epochs": epochs if epochs is not None else cfg["epochs"],
+        "imgsz": cfg["image_size"],
+        "batch": batch,
+        "lr0": cfg["lr0"],
+        "lrf": cfg["lrf"],
+        "momentum": cfg["momentum"],
+        "weight_decay": cfg["weight_decay"],
+        "warmup_epochs": cfg["warmup_epochs"],
+        "warmup_momentum": cfg["warmup_momentum"],
+        "warmup_bias_lr": cfg["warmup_bias_lr"],
+        "close_mosaic": cfg["close_mosaic"],
+        "patience": cfg["patience"],
+        "save_period": cfg["save_period"],
+        "workers": cfg["workers"],
+        "optimizer": cfg["optimizer"],
+        "device": model_cfg.get("device", "cpu"),
+        "amp": cfg.get("amp", False),
+        "cache": cfg.get("cache", False),
+        "verbose": cfg.get("verbose", True),
+        "project": str(ROOT / "runs" / "detect" / "models"),
+        "name": "vehicle_detection",
+        "exist_ok": True,
+    }
+
+    for key in AUGMENT_KEYS:
+        if key in aug_cfg:
+            kwargs[key] = aug_cfg[key]
+
+    return kwargs
+
+
+def train_model(config, batch=None, epochs=None):
     """
     Melatih model YOLOv11n yang dioptimalkan untuk CPU.
-    
-    Proses training:
-    1. Cek sumber daya sistem
-    2. Sesuaikan batch size berdasarkan RAM
-    3. Muat model YOLOv11n (Nano)
-    4. Jalankan training dengan parameter dari config
-    5. Simpan model best.pt dan last.pt
-    
+
     Args:
         config: dict konfigurasi dari config.yaml
-        
+        batch: override batch size (None = dari RAM)
+        epochs: override jumlah epoch (None = dari config)
+
     Returns:
         Hasil training dari ultralytics
     """
@@ -95,193 +134,91 @@ def train_model(config):
     print("DIOPTIMALKAN UNTUK CPU - Intel i3-1115G4")
     print("=" * 60)
 
-    # Cek sumber daya
     resources = check_system_resources()
+    if batch is None:
+        batch = resources["recommended_batch"]
 
-    # Sesuaikan batch size berdasarkan RAM yang tersedia
-    recommended_batch = 4
-    if resources["ram_gb"] < 6:
-        recommended_batch = 2
-        print("\n[PERINGATAN] RAM rendah, mengurangi batch_size ke 2")
-    elif resources["ram_gb"] >= 16:
-        recommended_batch = 8
-        print("\n[INFO] RAM tinggi, meningkatkan batch_size ke 8")
+    epochs_final = epochs if epochs is not None else cfg["epochs"]
 
-    # Muat model
-    model_name = model_cfg["architecture"]
-    print(f"\n[INFO] Model: {model_name} (Nano - dioptimalkan untuk CPU)")
+    print(f"\n[INFO] Model: {model_cfg['architecture']} (Nano - dioptimalkan untuk CPU)")
     print(f"[INFO] Ukuran gambar: {cfg['image_size']}x{cfg['image_size']}")
-    print(f"[INFO] Batch size: {recommended_batch}")
-    print(f"[INFO] Epochs: {cfg['epochs']}")
-    print(f"[INFO] Device: CPU (tanpa CUDA)")
+    print(f"[INFO] Batch size: {batch}")
+    print(f"[INFO] Epochs: {epochs_final}")
+    print(f"[INFO] Device: {model_cfg.get('device', 'cpu')}")
 
-    # Estimasi waktu training
-    est_time_per_epoch = 120  # estimasi kasar untuk CPU dengan 416x416
-    total_est = est_time_per_epoch * cfg['epochs'] / 60
+    total_est = 120 * epochs_final / 60
     print(f"[INFO] Estimasi waktu training: ~{total_est:.0f} menit")
 
-    # Muat augmentasi dari config
-    aug_cfg = config.get("augmentation", {})
-    print(f"\n[AUGMENTASI]")
-    print(f"  Flip horizontal: {aug_cfg.get('fliplr', 0.5)}")
-    print(f"  Mosaic: {aug_cfg.get('mosaic', 1.0)}")
-    print(f"  HSV Brightness: {aug_cfg.get('hsv_v', 0.4)}")
-    print(f"  Shear: {aug_cfg.get('shear', 5.0)}")
-    print(f"  Blur: {aug_cfg.get('blur', 0.01)}")
-    print(f"  Grayscale: {aug_cfg.get('grayscale', 0.1)}")
-    print(f"  Erasing: {aug_cfg.get('erasing', 0.0)} ← DIMATIKAN untuk counting")
+    print("\n[AUGMENTASI]")
+    for key in AUGMENT_KEYS:
+        if key in config.get("augmentation", {}):
+            print(f"  {key}: {config['augmentation'][key]}")
 
-    # Mulai training
     print("\n[INFO] Memulai training...")
     start_time = time.time()
 
-    model = YOLO(model_name)
+    # Arsitektur dasar (yolo11n.pt) dipakai sebagai starting point. Kalau file
+    # ada di root project, pakai path absolut; kalau tidak (mis. dipanggil
+    # lewat CWD lain), Ultralytics akan mencarinya sendiri lewat nama.
+    architecture = model_cfg["architecture"]
+    arch_path = Path(architecture)
+    if not arch_path.is_absolute() and (ROOT / arch_path).is_file():
+        architecture = str(ROOT / arch_path)
+    print(f"[INFO] Arsitektur dasar: {architecture}")
+    model = YOLO(architecture)
+    results = model.train(**build_train_kwargs(config, batch=batch, epochs=epochs_final))
 
-    results = model.train(
-        data=config["dataset"]["yaml_path"],
-        epochs=cfg["epochs"],
-        imgsz=cfg["image_size"],
-        batch=recommended_batch,
-        lr0=cfg["lr0"],
-        lrf=cfg["lrf"],
-        momentum=cfg["momentum"],
-        weight_decay=cfg["weight_decay"],
-        warmup_epochs=cfg["warmup_epochs"],
-        warmup_momentum=cfg["warmup_momentum"],
-        warmup_bias_lr=cfg["warmup_bias_lr"],
-        close_mosaic=cfg["close_mosaic"],
-        patience=cfg["patience"],
-        save_period=cfg["save_period"],
-        workers=cfg["workers"],
-        optimizer=cfg["optimizer"],
-        device="cpu",
-        amp=False,
-        cache=False,
-        verbose=True,
-        project="models",
-        name="vehicle_detection",
-        exist_ok=True,
-        # === AUGMENTASI PARAMETERS ===
-        fliplr=aug_cfg.get("fliplr", 0.5),
-        flipud=aug_cfg.get("flipud", 0.0),
-        mosaic=aug_cfg.get("mosaic", 1.0),
-        hsv_h=aug_cfg.get("hsv_h", 0.015),
-        hsv_s=aug_cfg.get("hsv_s", 0.7),
-        hsv_v=aug_cfg.get("hsv_v", 0.4),
-        degrees=aug_cfg.get("degrees", 0.0),
-        translate=aug_cfg.get("translate", 0.1),
-        scale=aug_cfg.get("scale", 0.5),
-        shear=aug_cfg.get("shear", 5.0),
-        perspective=aug_cfg.get("perspective", 0.001),
-        blur=aug_cfg.get("blur", 0.01),
-        erasing=aug_cfg.get("erasing", 0.0),
-        grayscale=aug_cfg.get("grayscale", 0.1),
-        mixup=aug_cfg.get("mixup", 0.0),
-        copy_paste=aug_cfg.get("copy_paste", 0.0),
-        crop_fraction=aug_cfg.get("crop_fraction", 1.0),
-    )
-
-    elapsed = time.time() - start_time
-    elapsed_min = elapsed / 60
+    elapsed_min = (time.time() - start_time) / 60
 
     print(f"\n[INFO] Training selesai!")
     print(f"[INFO] Total waktu: {elapsed_min:.1f} menit")
-    print(f"[INFO] Model terbaik: models/vehicle_detection/weights/best.pt")
-    print(f"[INFO] Model terakhir: models/vehicle_detection/weights/last.pt")
+    print(f"[INFO] Model terbaik: {ROOT / 'runs/detect/models/vehicle_detection/weights/best.pt'}")
+    print(f"[INFO] Model terakhir: {ROOT / 'runs/detect/models/vehicle_detection/weights/last.pt'}")
 
     return results
 
 
 def quick_train(config):
-    """
-    Training cepat dengan epoch minimal untuk pengujian.
-    Menggunakan augmentasi yang sama dengan training penuh.
-    
-    Args:
-        config: dict konfigurasi
-        
-    Returns:
-        Hasil training
-    """
+    """Training cepat (10 epochs) untuk smoke test konfigurasi."""
     print("\n[INFO] MODE TRAINING CEPAT (10 epochs)")
-    print("[INFO] Augmentasi: Menggunakan konfigurasi yang sama dengan training penuh")
-    cfg = config["training"]
-    cfg["epochs"] = 10
-    cfg["patience"] = 5
-    return train_model(config)
+    print("[INFO] Augmentasi: konfigurasi sama dengan training penuh")
+    return train_model(config, epochs=10)
 
 
 def resume_training(config, last_model):
     """
-    Melanjutkan training dari checkpoint terakhir.
-    Menggunakan augmentasi yang sama dengan training penuh.
-    
-    Args:
-        config: dict konfigurasi
-        last_model: path ke model last.pt
-        
-    Returns:
-        Hasil training
+    Lanjutkan training dari checkpoint terakhir.
+
+    Memakai kwargs yang sama persis dengan train_model() agar fase
+    close_mosaic tidak ter-reset.
     """
     print(f"\n[INFO] Melanjutkan training dari: {last_model}")
-    print("[INFO] Augmentasi: Menggunakan konfigurasi yang sama dengan training penuh")
-
-    # Muat augmentasi dari config
-    aug_cfg = config.get("augmentation", {})
-    cfg = config["training"]
 
     model = YOLO(last_model)
-    results = model.train(
-        data=config["dataset"]["yaml_path"],
-        epochs=cfg["epochs"],
-        imgsz=cfg["image_size"],
-        batch=4,
-        device="cpu",
-        amp=False,
-        project="models",
-        name="vehicle_detection",
-        exist_ok=True,
-        # === AUGMENTASI PARAMETERS (sama dengan train_model) ===
-        fliplr=aug_cfg.get("fliplr", 0.5),
-        flipud=aug_cfg.get("flipud", 0.0),
-        mosaic=aug_cfg.get("mosaic", 1.0),
-        hsv_h=aug_cfg.get("hsv_h", 0.015),
-        hsv_s=aug_cfg.get("hsv_s", 0.7),
-        hsv_v=aug_cfg.get("hsv_v", 0.4),
-        degrees=aug_cfg.get("degrees", 0.0),
-        translate=aug_cfg.get("translate", 0.1),
-        scale=aug_cfg.get("scale", 0.5),
-        shear=aug_cfg.get("shear", 5.0),
-        perspective=aug_cfg.get("perspective", 0.001),
-        blur=aug_cfg.get("blur", 0.01),
-        erasing=aug_cfg.get("erasing", 0.0),
-        grayscale=aug_cfg.get("grayscale", 0.1),
-        mixup=aug_cfg.get("mixup", 0.0),
-        copy_paste=aug_cfg.get("copy_paste", 0.0),
-        crop_fraction=aug_cfg.get("crop_fraction", 1.0),
-    )
-    return results
+    kwargs = build_train_kwargs(config, batch=recommend_batch(psutil.virtual_memory().total / (1024**3)))
+    kwargs["resume"] = True
+    return model.train(**kwargs)
 
 
 def main():
     """Fungsi utama untuk menjalankan script training dari command line."""
+    import argparse
+
     parser = argparse.ArgumentParser(
         description="Training YOLOv11 untuk Deteksi Kendaraan (Dioptimalkan untuk CPU)"
     )
-    parser.add_argument("--config", type=str, default="config/config.yaml",
-                       help="Path file konfigurasi")
+    parser.add_argument("--config", type=str, default=None,
+                       help="Path file konfigurasi (default: config/config.yaml)")
     parser.add_argument("--epochs", type=int, default=None,
                        help="Jumlah epoch")
     parser.add_argument("--batch", type=int, default=None,
                        help="Batch size")
-    parser.add_argument("--imgsz", type=int, default=None,
-                       help="Ukuran gambar")
+    parser.add_argument("--check", action="store_true",
+                       help="Cek sumber daya sistem saja")
     parser.add_argument("--quick", action="store_true",
                        help="Training cepat (10 epochs)")
     parser.add_argument("--resume", type=str, default=None,
                        help="Lanjutkan dari checkpoint")
-    parser.add_argument("--check", action="store_true",
-                       help="Cek sumber daya sistem saja")
     args = parser.parse_args()
 
     if args.check:
@@ -290,20 +227,12 @@ def main():
 
     config = load_config(args.config)
 
-    # Override konfigurasi dari command line
-    if args.epochs:
-        config["training"]["epochs"] = args.epochs
-    if args.batch:
-        config["training"]["batch_size"] = args.batch
-    if args.imgsz:
-        config["training"]["image_size"] = args.imgsz
-
     if args.resume:
         resume_training(config, args.resume)
     elif args.quick:
         quick_train(config)
     else:
-        train_model(config)
+        train_model(config, batch=args.batch, epochs=args.epochs)
 
 
 if __name__ == "__main__":
