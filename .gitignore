@@ -21,6 +21,7 @@ build/
 
 # Data
 data/raw/*
+data/staging/
 data/annotated/images/train/*
 data/annotated/images/val/*
 data/annotated/images/test/*

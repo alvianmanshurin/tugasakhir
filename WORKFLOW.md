@@ -33,6 +33,33 @@
 
 ---
 
+## CLI Terpadu (semua perintah lewat satu pintu)
+
+Setiap langkah di dokumen ini bisa dijalankan lewat `python main.py <command>`
+(argumen sama persis dengan `python src/<script>.py`):
+
+```bash
+python main.py --help          # daftar command
+python main.py extract --action extract-all
+python main.py annotate --image-dir ... --label-dir ...
+python main.py dataset --action split-report
+python main.py train --quick
+python main.py evaluate --task all
+python main.py pipeline --source 0 --show
+```
+
+Alur dataset end-to-end (stage → annotate → split → validate → yaml → train):
+
+```bash
+python main.py workflow             # tahap aman (staging, tanpa timpa train/val)
+python main.py workflow --rebuild   # + split --clean (MENIMPA label review manual)
+python main.py workflow --list      # lihat rencana tahap
+```
+
+Cara lama `python src/<script>.py` tetap didukung.
+
+---
+
 ## BAGIAN 0: Temuan Penting Tentang Split (baca sebelum training ulang)
 
 ### 0.1 Split yang aktif sekarang bocor total
@@ -105,7 +132,12 @@ Urutan yang masuk akal:
 Script `src/auto_annotate.py` menggunakan model YOLOv11 yang sudah dilatih di COCO dataset untuk otomatis melabeli kendaraan.
 
 ```bash
-# Auto-annotate training set
+# Cara otomatis (disarankan): stage + annotate sekaligus ke data/staging,
+# tanpa menyentuh label review manual di data/annotated
+python main.py workflow --stage stage
+python main.py workflow --stage annotate
+
+# Cara manual per split (seperti di bawah ini)
 python src/auto_annotate.py \
   --image-dir data/annotated/images/train \
   --label-dir data/annotated/labels/train \

@@ -195,6 +195,47 @@ python -c "from pathlib import Path; [p.mkdir(parents=True, exist_ok=True) for p
 
 ## Panduan Penggunaan
 
+### 0. CLI Terpadu (satu pintu masuk)
+
+Semua script bisa dijalankan lewat satu entry point. Argumen setelah
+command diteruskan apa adanya ke scriptnya:
+
+```bash
+python main.py --help               # daftar command
+python main.py train --quick        # = python src/train.py --quick
+python main.py detect --source ...  # = python src/detect.py --source ...
+python -m src workflow --list       # setara, lewat mode package
+```
+
+Cara lama `python src/<script>.py` tetap didukung. Command yang tersedia:
+`annotate`, `annot-helper`, `batch`, `collect`, `cctv`, `compare`,
+`dataset`, `detect`, `detect-track`, `evaluate`, `export`, `extract`,
+`gui`, `monitor`, `pipeline`, `query-db`, `realtime`, `train`,
+`workflow`.
+
+#### Alur dataset otomatis (`workflow`)
+
+Menghubungkan extract → auto-annotate → split → validate → yaml → train:
+
+```bash
+# Tahap aman (TIDAK menyentuh train/val): stage + annotate + validate + yaml
+python main.py workflow
+
+# Full rebuild: + ekstrak video + split --clean + training
+python main.py workflow --extract --rebuild --train
+
+# Lihat rencana tahap / jalankan satu tahap
+python main.py workflow --list
+python main.py workflow --stage annotate
+```
+
+Tahapan: `extract` (frame dari video), `stage` (salin pool `data/raw/merged`
+→ `data/staging/images`, idempoten), `annotate` (model COCO →
+`data/staging/labels`), `split` (group-aware ke train/val - hanya jalan
+dengan `--rebuild` karena menimpa label review manual), `validate`
+(read-only), `yaml`, `train`. Label final di `data/annotated` tidak pernah
+disentuh tanpa `--rebuild`.
+
 ### 1. Koleksi Dataset
 
 ```bash
@@ -503,6 +544,15 @@ annotasi bus tambahan adalah langkah yang benar-benar menentukan.
 ---
 
 ## Changelog
+
+### v1.3.0 - CLI Unification & Dataset Workflow (01 Okt 2026)
+
+- **Added:** `main.py` / `python -m src` - satu entry point untuk semua script; argumen diteruskan ke argparse masing-masing modul
+- **Added:** `src/cli.py` - dispatcher dengan lazy import (help instan, tanpa memuat ultralytics/torch)
+- **Added:** `src/workflow.py` - alur dataset otomatis: stage → annotate → split → validate → yaml → train, dengan staging terpisah (`data/staging`) supaya label review manual tidak tertimpa diam-diam
+- **Fixed:** ringkasan "Per kelas" `auto_annotate` selalu menampilkan 0 (dict id↔nama terbalik)
+- **Fixed:** `--swap` `auto_annotate` memberi pesan `[ERROR]` yang jelas, bukan traceback (validasi id kelas proyek)
+- **Updated:** bootstrap `sys.path` konsisten di semua modul (`cctv_connect.py`, `src/__init__.py`)
 
 ### v1.2.0 - Pipeline Unification (28 Sep 2026)
 

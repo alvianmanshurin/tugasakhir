@@ -1,15 +1,10 @@
-# Dataset Configuration for Vehicle Detection
-# YOLOv8 Format
-
 path: D:/KULIAH/Tugas Akhir/tugasakhir/data/annotated
 train: images/train
 val: images/val
-test: images/test
-
-# Classes
 nc: 4
 names:
   0: motor
   1: mobil
   2: bus
   3: truk
+test: images/test

@@ -9,7 +9,7 @@ akan dipetakan lagi menjadi 2 (bus) tetapi kelas 3 (truk) menjadi 0 (motor).
 Karena itu ``--model`` di sini hanya boleh model COCO; model proyek
 ditolak eksplisit.
 
-Fitra:
+Fitur:
 - Tidak pernah menimpa label yang sudah ada tanpa ``--overwrite``.
 - Box di luar rentang 0-1 di-clamp, box degenerate dibuang.
 - Mendukung camouflage: bus/truk besar sering salah diklasifikasikan
@@ -156,8 +156,8 @@ def auto_annotate(
     print(f"[INFO] Model: {model_name}  conf={conf_threshold}  imgsz={img_size}")
 
     model = YOLO(model_name)
-    _, model_names = check_model_is_coco(model)
-    project_names = {v: k for k, v in get_class_names().items()}  # id -> nama
+    check_model_is_coco(model)
+    project_names = get_class_names()  # id -> nama
 
     swap = {int(k): int(v) for k, v in (swap or {}).items()}
     if swap:
@@ -257,16 +257,26 @@ def main() -> int:
                         help="koreksi kelas manual, mis. '5:3' untuk bus->truk")
     args = parser.parse_args()
 
-    swap = {}
-    if args.swap:
-        for part in args.swap.split(","):
-            if ":" not in part:
-                print(f"[ERROR] Format --swap harus 'coco:proyek', dapat: {part}")
-                return 1
-            src, dst = part.split(":", 1)
-            swap[int(src)] = int(dst)
-
     try:
+        valid_classes = set(get_class_names())
+        swap = {}
+        if args.swap:
+            for part in args.swap.split(","):
+                if ":" not in part:
+                    print(f"[ERROR] Format --swap harus 'coco:proyek', dapat: {part}")
+                    return 1
+                src, dst = part.split(":", 1)
+                try:
+                    src_id, dst_id = int(src), int(dst)
+                except ValueError:
+                    print(f"[ERROR] --swap harus angka 'coco:proyek', dapat: {part}")
+                    return 1
+                if dst_id not in valid_classes:
+                    print(f"[ERROR] Kelas proyek {dst_id} tidak valid "
+                          f"(pilihan: {sorted(valid_classes)})")
+                    return 1
+                swap[src_id] = dst_id
+
         auto_annotate(
             image_dir=args.image_dir, label_dir=args.label_dir,
             model_name=args.model, conf_threshold=args.conf,

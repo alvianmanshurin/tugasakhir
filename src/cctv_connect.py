@@ -2,7 +2,6 @@
 Membantu menemukan dan menguji koneksi RTSP dari CCTV
 """
 
-import os
 import sys
 import cv2
 import yaml
@@ -13,7 +12,7 @@ import subprocess
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 # Preset URL RTSP untuk berbagai merek CCTV
