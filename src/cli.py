@@ -40,7 +40,7 @@ COMMANDS: Dict[str, Tuple[str, str]] = {
     "compare":      ("comparison",
                      "Bandingkan beberapa laporan evaluasi"),
     "dataset":      ("dataset_prepare",
-                     "Validasi / split / yaml dataset"),
+                     "Validasi / select-test / split stratified / yaml dataset"),
     "detect":       ("detect",
                      "Deteksi kendaraan pada gambar / folder"),
     "detect-track": ("detect_with_tracking",
@@ -64,8 +64,8 @@ COMMANDS: Dict[str, Tuple[str, str]] = {
     "train":        ("train",
                      "Training model YOLO"),
     "workflow":     ("workflow",
-                     "Alur dataset otomatis: stage -> annotate -> "
-                     "split -> validate -> yaml -> train"),
+                     "Alur dataset otomatis: extract -> merge -> stage -> "
+                     "annotate -> split -> validate -> yaml -> train"),
 }
 
 # Alias lama -> command resmi

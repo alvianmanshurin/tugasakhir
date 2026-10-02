@@ -10,7 +10,7 @@ CLI terpadu (``python main.py <command>`` / ``python -m src``).
 import sys
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.4.0"
 __author__ = "Penelitian Tugas Akhir"
 
 _SRC_DIR = str(Path(__file__).resolve().parent)

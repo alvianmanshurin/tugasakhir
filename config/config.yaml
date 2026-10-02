@@ -112,32 +112,33 @@ dataset:
 
   # Split grouping: frame video berurutan di-group per blok N frame sebelum
   # diacak, supaya frame yang berdekatan tidak masuk train DAN val sekaligus
-  # (leakage temporal). 30 frame = 1 detik pada 30fps.
+  # (leakage temporal). Dengan ekstrak interval 15 (0,5 detik per frame),
+  # 1 grup = 30 frame ≈ 15 detik video - tetangga dekat selalu satu split.
   group_size: 30
 
   # Asal video tiap frame di pool "merged".
   #
-  # Pool merged_ berisi 705 frame hasil penggabungan 4 video, dan nomor urutnya
-  # berurutan tanpa tumpang tindih:
-  #   merged_00000..00173 = KIRI-7   (174 frame)
-  #   merged_00174..00354 = KIRI-9   (181 frame)
-  #   merged_00355..00533 = TENGAH-7 (179 frame)
-  #   merged_00534..00704 = TENGAH-9 (171 frame)
-  # Diverifikasi dengan pencocokan hash MD5 ke data/raw (705/705 cocok).
+  # Pool merged_ = 4 video digabung berurutan sesuai urutan 'video_files'
+  # di bawah, nomor urut berurutan tanpa tumpang tindih (saat ini 2817 frame,
+  # ekstrak interval 15). Rentang di bawah DITULIS OTOMATIS oleh tahap merge:
+  #   python main.py extract --action merge
+  #   python main.py workflow --extract        (extract + merge bersamaan)
+  # Jadi jangan mengubahnya manual - ekstrak ulang dengan interval berbeda
+  # akan memperbaruinya.
   #
-  # Kenapa ini penting: blok 30 frame memotong batas antar video di 3 titik
-  # (blok 5, 11, 17), jadi frame dari dua kamera berbeda bisa berakhir di grup
-  # yang sama lalu masuk split yang sama. With video_ranges, grup dihitung
-  # per video sehingga batas antar kamera tidak pernah dilanggar.
+  # Kenapa ini penting: blok group_size frame memotong batas antar video,
+  # sehingga frame dari dua kamera berbeda bisa berakhir di grup yang sama
+  # lalu masuk split yang sama. Dengan video_ranges, grup dihitung per video
+  # sehingga batas antar kamera tidak pernah dilanggar.
   #
   # Format: nama video: [nomor_awal, nomor_akhir] (inklusif, berbasis nomor
   # merged_). Kosongkan daftar (video_ranges: {}) untuk kembali ke perilaku
   # blok tanpa batas video.
   video_ranges:
-    KIRI-7: [0, 173]
-    KIRI-9: [174, 354]
-    TENGAH-7: [355, 533]
-    TENGAH-9: [534, 704]
+    KIRI-7: [0, 694]
+    KIRI-9: [695, 1417]
+    TENGAH-7: [1418, 2133]
+    TENGAH-9: [2134, 2816]
 
   # Video source for frame extraction
   video_source: "D:/KULIAH/Tugas Akhir/Data video Tugas Akhir"

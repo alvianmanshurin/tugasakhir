@@ -143,13 +143,13 @@ Contoh:
 ```
 data/annotated/
 ├── images/
-│   ├── train/     # 564 gambar
-│   ├── val/       # 71 gambar
-│   └── test/      # 70 gambar
+│   ├── train/     # 2045 gambar (80% grup, stratified per kelas)
+│   ├── val/       # 480 gambar
+│   └── test/      # 292 gambar (10% grup utuh, tersebar 4 video)
 └── labels/
-    ├── train/     # 564 label (177 kosong = background)
-    ├── val/       # 71 label (18 kosong)
-    └── test/      # 70 label (13 kosong)
+    ├── train/     # 2045 label (548 kosong = background)
+    ├── val/       # 480 label (99 kosong)
+    └── test/      # 292 label (62 kosong)
 ```
 
 Label kosong itu disengaja: gambar tanpa kendaraan tetap perlu file `.txt`
@@ -215,26 +215,30 @@ Cara lama `python src/<script>.py` tetap didukung. Command yang tersedia:
 
 #### Alur dataset otomatis (`workflow`)
 
-Menghubungkan extract → auto-annotate → split → validate → yaml → train:
+Menghubungkan extract → merge → auto-annotate → split → validate → yaml → train:
 
 ```bash
 # Tahap aman (TIDAK menyentuh train/val): stage + annotate + validate + yaml
 python main.py workflow
 
-# Full rebuild: + ekstrak video + split --clean + training
-python main.py workflow --extract --rebuild --train
+# Full rebuild: ekstrak video interval 15 + merge pool + pilih test + split + training
+python main.py workflow --extract --interval 15 --rebuild --train
 
 # Lihat rencana tahap / jalankan satu tahap
 python main.py workflow --list
 python main.py workflow --stage annotate
 ```
 
-Tahapan: `extract` (frame dari video), `stage` (salin pool `data/raw/merged`
-→ `data/staging/images`, idempoten), `annotate` (model COCO →
-`data/staging/labels`), `split` (group-aware ke train/val - hanya jalan
+Tahapan: `extract` (frame dari video, hanya video di
+`dataset.video_files`), `merge` (bangun ulang `data/raw/merged` + tulis
+`dataset.video_ranges` supaya rentang tidak basi), `stage` (salin pool →
+`data/staging/images`, refresh bila pool berubah, idempoten), `annotate`
+(model COCO → `data/staging/labels`), `split` (pilih test = grup utuh
+tersebar antar video, lalu train/val stratified per kelas - hanya jalan
 dengan `--rebuild` karena menimpa label review manual), `validate`
 (read-only), `yaml`, `train`. Label final di `data/annotated` tidak pernah
-disentuh tanpa `--rebuild`.
+disentuh tanpa `--rebuild`. Rasio: `--ratio` (train 0.8),
+`--test-ratio` (test 0.1), `--seed` (42, deterministik).
 
 ### 1. Koleksi Dataset
 
@@ -295,21 +299,20 @@ python src/dataset_prepare.py --action split --source <dir> --clean
 python src/dataset_prepare.py --action yaml
 ```
 
-#### Kebocoran Split Saat Ini {#split-report}
+#### Kebocoran Split: Sudah Diperbaiki {#split-report}
 
-Split yang sedang aktif sekarang berasal dari `split` lama (acak per gambar).
-`--action split-report` mengukurnya tanpa menyentuh file:
+`--action split-report` mengukur kebocoran tanpa menyentuh file. Split lama
+(acak per gambar) bocor total:
 
 ```
-Jumlah grup      : 27 (group_size=30)
-Grup terbagi ke >1 split : 25 (92.6% dari grup)
-Frame di grup bocor     : 694 (98.4% dari frame)
+SEBELUM : Grup terbagi >1 split = 25 (92.6%), frame bocor = 694 (98.4%)
+SEKARANG: Grup terbagi >1 split = 0  (0.0%),  frame bocor = 0   (0.0%)
 ```
 
-Artinya hampir semua blok frame berdekatan terbagi ke train, val, dan test
-sekaligus, sehingga metrik validasi maupun test terlalu tinggi dan tidak
-menunjukkan kemampuan di lapangan. Jalankan perintah ini sebelum regenerate
-split.
+Split sekarang dibangun `python main.py workflow --rebuild`: grup utuh
+(blok 30 frame dibatasi `video_ranges`), test = grup utuh tersebar antar 4
+video (10%), train/val stratified per kelas. Jalankan perintah ini kapan
+saja untuk memverifikasi angkanya tetap 0%.
 
 ### 4. Training Model
 
@@ -481,6 +484,10 @@ area frame, jadi kalibrasi terhadap rekaman gerbang masih wajib.
 
 ### Hasil Evaluasi Terukur
 
+> **Angka di bawah berasal dari model & split LAMA (705 frame, 02 Sep-01 Okt
+> 2026).** Dataset sekarang 2817 frame dengan split bebas-leakage, jadi
+> training + evaluasi harus diulang sebelum angka ini dipakai di laporan.
+
 `python src/evaluate.py --task all` (run terakhir, tersimpan di
 `outputs/evaluation/evaluation_report.json`):
 
@@ -512,17 +519,17 @@ Confusion matrix (IoU>=0.5, conf>=0.5) pada dua split:
 Test set di atas baru diukur sekali pada 28 Sep 2026. Angka test **tidak
 boleh dipakai untuk tuning apa pun** - hanya untuk laporan akhir.
 
-Kelas `bus` tidak menghasilkan satu pun true positive. Penyebabnya sudah
-terukur, bukan dugaan:
+Kelas `bus` tidak menghasilkan satu pun true positive pada evaluasi lama.
+Penyebabnya sudah terukur, bukan dugaan:
 
-- hanya **15 gambar** dari 705 memuat bus, total 16 instans di seluruh dataset
-- split lama hanya menyisakan **1 instans bus di val**, jadi kelas bus
-  praktis tidak terukur di validation
-- 98.4% frame berada di grup yang bocor ke lebih dari satu split
+- hanya **99 instans bus** di seluruh 2817 frame (~2% instance)
+- split lama menyisakan **1 instans bus di val** dan 98.4% frame bocor antar
+  split - keduanya sudah diperbaiki (stratified split: bus 70 train / 18 val /
+  11 test, leakage 0.0%)
+- masalah yang tersisa adalah **jumlahnya**, bukan pembagiannya
 
-Simulasi split group-aware (80/20) menghasilkan bus=2 instans di val - masih
-terlalu tipis. **Mengganti split saja tidak akan menyelesaikan kelas bus**;
-annotasi bus tambahan adalah langkah yang benar-benar menentukan.
+**Mengganti split saja tidak menyelesaikan kelas bus**; annotasi bus tambahan
+(target 150-200 instans) adalah langkah yang benar-benar menentukan.
 
 > Angka 72.6% yang pernah ada di dokumen ini tidak bisa direproduksi lagi
 > (jalur `save_dir` dan nama kurva tidak cocok dengan Ultralytics yang
@@ -544,6 +551,29 @@ annotasi bus tambahan adalah langkah yang benar-benar menentukan.
 ---
 
 ## Changelog
+
+### v1.4.0 - Dataset Regeneration & Leak-Free Split (02 Okt 2026)
+
+- **Added:** tahap `merge` di workflow - membangun ulang `data/raw/merged`
+  dari folder per video sekaligus menulis `dataset.video_ranges` di config
+  (rentang tidak pernah basi setelah ekstrak ulang)
+- **Added:** `extract` menghormati `dataset.video_files`, jadi video hasil
+  proses (`*_output.mp4`) tidak ikut masuk pool dataset
+- **Added:** `dataset --action select-test` + `workflow --test-ratio` -
+  test set = grup utuh, round-robin antar video (default 10%)
+- **Added:** split train/val **stratified per kelas** - kelas langka (bus)
+  tidak lagi menumpuk di satu split (bus: 1 → 18 instans di val)
+- **Added:** `rmtree_force()` - `split --clean` tahan folder beratribut
+  ReadOnly (sebelumnya WinError 5 di tengah split)
+- **Fixed:** ekstrak ulang menumpuk frame lama bercampur frame baru
+  (penomoran melanjutkan file yang ada) - folder output kini dibersihkan
+- **Fixed:** guard cek label di `workflow` memakai filter gambar, jadi `.txt`
+  tidak pernah terdeteksi dan tahap split selalu gagal
+- **Fixed:** stage tidak mendeteksi gambar basi - pool baru bisa berpadu
+  dengan label lama; kini gambar basi diganti + labelnya dibuang, yatim
+  dibersihkan
+- **Data:** 2817 frame (interval 15, 4 video) → 4835 box auto-annotate;
+  split train 2045 / val 480 / test 292, leakage **98.4% → 0.0%**
 
 ### v1.3.0 - CLI Unification & Dataset Workflow (01 Okt 2026)
 

@@ -4,10 +4,10 @@
 ## Status Saat Ini
 
 ```
-[OK] Video frames extracted          : 705 frame unik (KIRI-7/9, TENGAH-7/9, merged)
-[OK] Provenance frame merged_ dipetakan: 705/705 cocok ke 4 video sumber
-[OK] Split lama terukur bocor          : 98.4% frame di grup yang terbagi >1 split
-[OK] Auto-annotate YOLO11 COCO        : 1097 box
+[OK] Ekstrak frame (interval 15)       : 2817 frame unik dari 4 video (1920x1080, 0.5 dtk)
+[OK] Pool merged + video_ranges        : dibangun & ditulis otomatis oleh tahap 'merge'
+[OK] Split regenerasi                  : 0.0% grup terbagi (train 2045 / val 480 / test 292)
+[OK] Auto-annotate YOLO11 COCO         : 4835 box di 2817 gambar (conf 0.35)
 [OK] Train YOLOv11n (50 epoch, CPU)   : runs/detect/models/vehicle_detection/weights/best.pt
 [OK] Evaluasi val (--task all)        : mAP50 38.5%, mAP50-95 29.9%, P 60.3%, R 41.2%
 [OK] Evaluasi test (--split test)     : TP 84, FP 11, FN 61, P 88.4%, R 57.9%
@@ -17,10 +17,10 @@
 [OK] Database SQLite (WAL, UNIQUE)    : sessions, detections, frame_stats, ringkasan
 [OK] Export ONNX & TorchScript        : artefak dipindah ke folder --output
 [OK] Pipeline end-to-end diuji        : video sintetis + 70 gambar test
-[ ] Anotasi bus tambahan              : hanya 15 dari 705 gambar memuat bus
-[ ] Regenerate split (lihat BAGIAN 0)
+[OK] Regenerate split                 : grup utuh + stratified + test antar video (BAGIAN 0)
+[ ] Anotasi bus tambahan              : 99 instans total, cuma 2.1% dari train (target 150-200)
 [ ] Kalibrasi ROI dengan video operasional nyata (butuh rekaman gerbang)
-[ ] Training ulang setelah perbaikan dataset
+[ ] Training ulang setelah perbaikan dataset (angka eval di atas = dataset LAMA)
 [ ] Verifikasi arah masuk/keluar di CCTV nyata (butuh video crossing)
 [ ] Deployment at gate ITERA
 ```
@@ -30,6 +30,10 @@
 > nama kurva tidak cocok dengan Ultralytics yang terpasang). Angka di atas
 > adalah hasil run `python src/evaluate.py --task all` yang benar dan
 > tersimpan di `outputs/evaluation/evaluation_report.json`.
+>
+> **Angka train/eval di atas masih dari split & dataset LAMA (705 frame).**
+> Dataset sekarang 2817 frame dengan split bebas-leakage, jadi training dan
+> evaluasi harus diulang sebelum angkanya dipakai di laporan.
 
 ---
 
@@ -48,78 +52,102 @@ python main.py evaluate --task all
 python main.py pipeline --source 0 --show
 ```
 
-Alur dataset end-to-end (stage → annotate → split → validate → yaml → train):
+Alur dataset end-to-end (extract → merge → stage → annotate → split →
+validate → yaml → train):
 
 ```bash
 python main.py workflow             # tahap aman (staging, tanpa timpa train/val)
-python main.py workflow --rebuild   # + split --clean (MENIMPA label review manual)
+python main.py workflow --rebuild   # + pilih test + split train/val (MENIMPA)
+python main.py workflow --extract --interval 15 --rebuild
+                                    # ekstrak ulang dari video -> merge pool ->
+                                    # stage -> annotate -> split -> validate -> yaml
 python main.py workflow --list      # lihat rencana tahap
 ```
+
+Tahap `merge` (ikut `--extract`, atau `--stage merge` sendiri) membangun
+`data/raw/merged` dari folder per video DAN menulis ulang
+`dataset.video_ranges` di config - jadi rentang tidak pernah basi setelah
+ekstrak ulang. Filter `dataset.video_files` memastikan video hasil proses
+(`*_output.mp4`) tidak ikut masuk pool.
+
+Opsi split: `--ratio` (train, default 0.8), `--test-ratio` (test, default
+0.1), `--seed` (default 42, deterministik).
 
 Cara lama `python src/<script>.py` tetap didukung.
 
 ---
 
-## BAGIAN 0: Temuan Penting Tentang Split (baca sebelum training ulang)
+## BAGIAN 0: Temuan & Keputusan Tentang Split (baca sebelum training ulang)
 
-### 0.1 Split yang aktif sekarang bocor total
+### 0.1 Split lama bocor - sudah diperbaiki (02 Okt 2026)
 
-`python src/dataset_prepare.py --action split-report` (read-only):
+`python main.py dataset --action split-report` (read-only):
 
 ```
-Jumlah grup      : 27 (group_size=30)
+SEBELUM (split acak per gambar, 705 frame):
 Grup terbagi ke >1 split : 25 (92.6% dari grup)
 Frame di grup bocor     : 694 (98.4% dari frame)
+
+SEKARANG (regenerasi via `workflow --rebuild`, 2817 frame):
+Jumlah grup      : 97 (group_size=30)
+Grup terbagi ke >1 split : 0 (0.0% dari grup)
+Frame di grup bocor     : 0 (0.0% dari frame)
 ```
 
-Hampir semua blok 30 frame terbagi ke train, val, dan test sekaligus.
-Artinya metrik validasi maupun test **terlalu tinggi** dan tidak
-menunjukkan kemampuan di lapangan.
+Split lama membagi blok 30 frame secara acak per gambar, sehingga frame
+berdekatan dari video yang sama tersebar ke train, val, dan test sekaligus -
+metrik validasi maupun test **terlalu tinggi**. Split baru membagi **grup
+utuh** (blok 30 frame dibatasi `video_ranges`), plus stratifikasi kelas.
 
-### 0.2 Asal tiap frame merged_ sudah diketahui
+### 0.2 Asal tiap frame merged_ (dijaga otomatis oleh tahap `merge`)
 
-Dengan pencocokan MD5 ke `data/raw` (705/705 cocok), pool `merged_` ternyata
-adalah 4 video yang digabung berurutan, dan nomor urutnya tidak tumpang tindih:
+Pool `merged_` adalah 4 video yang digabung berurutan sesuai urutan
+`dataset.video_files`, nomor urut tidak tumpang tindih. Saat ekstrak ulang
+(interval berbeda / video baru), tahap `merge` membangun pool ULANG dan
+menulis ulang `dataset.video_ranges` di config - rentang basi akan membuat
+grup memotong batas kamera lagi.
 
-| Video sumber | Frame merged_ | Jumlah |
-|--------------|---------------|--------|
-| KIRI-7 | 00000 - 00173 | 174 |
-| KIRI-9 | 00174 - 00354 | 181 |
-| TENGAH-7 | 00355 - 00533 | 179 |
-| TENGAH-9 | 00534 - 00704 | 171 |
+| Video sumber | Frame merged_ | Jumlah (interval 15) |
+|--------------|---------------|----------------------|
+| KIRI-7 | 00000 - 00694 | 695 |
+| KIRI-9 | 00695 - 01417 | 723 |
+| TENGAH-7 | 01418 - 02133 | 716 |
+| TENGAH-9 | 02134 - 02816 | 683 |
 
-Rentang ini sudah ditulis ke `config/config.yaml` sebagai `dataset.video_ranges`.
+### 0.3 Blok 30 frame memotong batas antar video tanpa `video_ranges`
 
-### 0.3 Blok 30 frame memotong batas antar video
+Tanpa `video_ranges`, blok 30 frame memotong batas antar kamera, sehingga
+frame dari dua kamera berbeda masuk grup yang sama lalu bisa tersebar ke dua
+split. Dengan `video_ranges` hal ini tidak mungkin terjadi - grup selalu
+berada dalam satu video. Inilah alasan tahap `merge` ikut memperbarui rentang
+setiap kali pool dibangun ulang.
 
-Tanpa `video_ranges`, blok 30 memotong batas antar kamera di **3 titik**
-(blok 5, 11, 17), sehingga frame dari dua kamera berbeda masuk grup yang sama.
-Dengan `video_ranges` hal ini tidak mungkin terjadi; jumlah grup naik dari 24
-jadi 27 dan tidak ada grup yang memuat dua kamera.
+### 0.4 Keputusan split yang dipakai (02 Okt 2026)
 
-### 0.4 Pilihan split (perlu keputusan)
+| Sisi | Pilihan | Alasan |
+|------|---------|--------|
+| train/val | grup utuh + **stratified per kelas**, 80/20 | kelas langka (bus) tidak menumpuk di satu split |
+| test | **grup utuh, round-robin antar 4 video**, 10% | test mewakili semua posisi kamera, tidak bocor ke train/val |
 
-Simulasi read-only atas 705 gambar:
+Hasil: train 2045 / val 480 / test 292 (total 2817), leakage 0.0%.
 
-| Opsi | train | val | test | bus di train/val/test |
-|------|-------|-----|------|----------------------|
-| Blok 30 + batas video, 80/20 | 585 | 120 | - | 14 / 2 |
-| Video-level: KIRI latih, TENGAH-7 val, TENGAH-9 test | 355 | 179 | 171 | 8 / 7 / 1 |
-| Video-level + TENGAH-7 ikut latih | 534 | 179 | 171 | 15 / 7 / 1 |
+Opsi yang ditolak: **video-level split** (train=KIRI, val=TENGAH-7,
+test=TENGAH-9) lebih jujur soal generalisasi antar kamera, tapi tiap split
+didominasi satu kamera dan varians metrik tinggi. Bisa dipakai ulang sebagai
+uji robustness terpisah kalau diminta penguji.
 
-Video-level mengukur generalisasi antar posisi kamera (lebih jujur untuk
-studi kasus gerbang), tapi hanya punya 4 video sehingga tiap split didominasi
-satu kamera dan variansnya tinggi.
+Test lama (70 frame, semuanya dari kamera KIRI-7) diganti oleh seleksi ini -
+frame lamanya kembali menjadi bagian train/val.
 
 ### 0.5 Split TIDAK akan memperbaiki kelas bus
 
-Setelah disimulasikan, kelas bus tetap tipis di semua opsi (maksimal 7
-instans di val). Yang menentukan adalah menambah anotasi bus: sekarang hanya
-**15 dari 705 gambar** yang memuat bus, total 16 instans.
+Bus tetap tipis: **99 instans di 2817 frame** (train 70, val 18, test 11),
+hanya ~2% instance. Angka val/test untuk bus masih belum stabil statistiknya.
 
 Urutan yang masuk akal:
 1. Anotasi lebih banyak gambar bus (target minimal 150-200 instans).
-2. Regenerate split dengan `--action split` (group-aware + batas video).
+2. Regenerate split dengan `python main.py workflow --rebuild` (test +
+   train/val dipilih ulang deterministik dari seed yang sama).
 3. Training ulang.
 4. Evaluasi di test **satu kali saja** di akhir.
 
@@ -375,12 +403,13 @@ tugasakhir/
 ├── data/
 │   ├── dataset.yaml             ← path absolut, ditulis dataset_prepare
 │   ├── detections.db            ← SQLite hasil counting
-│   ├── raw/                     ← frame hasil ekstraksi video
+│   ├── raw/                     ← frame per video + pool merged (2817 frame)
+│   ├── staging/                 ← images/ + labels/ hasil stage & annotate
 │   └── annotated/
 │       ├── images/
-│       │   ├── train/           ← 564 gambar (177 label kosong = background)
-│       │   ├── val/             ← 71 gambar (18 kosong)
-│       │   └── test/            ← 70 gambar (13 kosong), dipakai evaluasi manual
+│       │   ├── train/           ← 2045 gambar (548 label kosong = background)
+│       │   ├── val/             ← 480 gambar (99 kosong)
+│       │   └── test/            ← 292 gambar (62 kosong), grup utuh antar video
 │       └── labels/              ← YOLO txt, sejajar dengan images/
 │
 ├── src/
@@ -394,9 +423,9 @@ tugasakhir/
 │   ├── monitor.py               ← alias realtime.main
 │   ├── cctv_connect.py          ← CCTV/RTSP, reconnect, simpan config
 │   ├── gui_app.py               ← GUI Tkinter (thread-safe)
-│   ├── dataset_prepare.py       ← validate / split group-aware / split-report / labelme / yaml
+│   ├── dataset_prepare.py       ← validate / select-test / split stratified / split-report / labelme / yaml
 │   ├── dataset_collect.py       ← capture webcam, ekstrak frame dari video
-│   ├── extract_frames.py        ← ekstraksi frame + info video
+│   ├── extract_frames.py        ← ekstraksi frame + merge pool & video_ranges
 │   ├── auto_annotate.py         ← auto-label dari model COCO
 │   ├── annotation_helper.py     ← template LabelMe + konversi YOLO
 │   ├── export_model.py          ← ekspor ONNX/TorchScript/dll
@@ -437,7 +466,9 @@ tugasakhir/
 
 | Aktivitas | Waktu |
 |-----------|-------|
-| Auto-annotate 705 gambar | ~5 menit |
+| Ekstrak 4 video interval 15 (2817 frame) | ~13 menit (CPU) |
+| Auto-annotate 2817 gambar (COCO, conf 0.35) | ~15 menit |
+| Merge pool + stage + split + validate | ~1.5 menit |
 | Training 50 epochs | ~30-40 menit |
 | Evaluasi | ~10 detik |
 | ROI + Tracking setup | Sudah selesai |

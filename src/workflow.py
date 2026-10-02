@@ -3,8 +3,8 @@ Alur dataset otomatis - menghubungkan extract, auto-annotate, split,
 validate, yaml, dan train dalam satu perintah.
 
     python main.py workflow            # stage + annotate + validate + yaml
-    python main.py workflow --rebuild  # + split --clean (menimpa train/val)
-    python main.py workflow --extract  # + ekstrak frame dari video dulu
+    python main.py workflow --rebuild  # + pilih test + split (menimpa train/val)
+    python main.py workflow --extract  # + ekstrak frame dari video config
     python main.py workflow --train    # + training di akhir
     python main.py workflow --stage annotate
     python main.py workflow --list
@@ -12,6 +12,8 @@ validate, yaml, dan train dalam satu perintah.
 Urutan tahap dan kapan dijalankan:
 
     extract    hanya dengan --extract   ekstrak frame dari video config
+    merge      ikut --extract           bangun ulang data/raw/merged +
+                                         perbarui dataset.video_ranges
     stage      selalu (awal)            salin frame pool -> data/staging/images
     annotate   selalu                   auto_annotate COCO -> data/staging/labels
     split      hanya dengan --rebuild   split group-aware -> train/val (--clean)
@@ -42,14 +44,16 @@ STAGING_LABELS = STAGING_DIR / "labels"
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
-STAGE_ORDER = ["extract", "stage", "annotate", "split", "validate",
+STAGE_ORDER = ["extract", "merge", "stage", "annotate", "split", "validate",
                "yaml", "train"]
 
 STAGE_INFO: Dict[str, str] = {
     "extract":   "ekstrak frame dari video (butuh --extract)",
+    "merge":     "bangun ulang data/raw/merged + video_ranges (ikut --extract)",
     "stage":     "salin frame pool -> data/staging/images (idempoten)",
     "annotate":  "auto-annotate model COCO -> data/staging/labels",
-    "split":     "split group-aware -> train/val (hanya --rebuild, MENIMPA)",
+    "split":     "pilih test (grup utuh) + split train/val (hanya --rebuild, "
+                 "MENIMPA)",
     "validate":  "validasi label & kelas (read-only)",
     "yaml":      "tulis ulang data/dataset.yaml",
     "train":     "training YOLO (butuh --train)",
@@ -71,6 +75,14 @@ def _list_images(directory: Path) -> List[Path]:
         return []
     return sorted(p for p in directory.iterdir()
                   if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+
+
+def _list_labels(directory: Path) -> List[Path]:
+    """File label YOLO (``.txt``) - sengaja terpisah dari ``_list_images``."""
+    if not directory.is_dir():
+        return []
+    return sorted(p for p in directory.iterdir()
+                  if p.is_file() and p.suffix.lower() == ".txt")
 
 
 def find_pool(config: dict) -> Path:
@@ -102,9 +114,54 @@ def stage_extract(config: dict, opts) -> None:
     from extract_frames import VideoFrameExtractor
 
     extractor = VideoFrameExtractor(config)
-    total = extractor.extract_all_videos(interval=opts.interval)
+    # clean=True: folder output per video dimiliki alat ini dan harus
+    # dibersihkan supaya ekstrak ulang dengan interval berbeda tidak
+    # menumpuk frame lama bercampur frame baru.
+    total = extractor.extract_all_videos(
+        interval=opts.interval,
+        max_frames_per_video=opts.max_frames,
+        clean=True,
+    )
     if not total:
         raise RuntimeError("Ekstraksi frame gagal / tidak ada video.")
+
+
+def stage_merge(config: dict, opts) -> None:
+    from extract_frames import VideoFrameExtractor
+
+    extractor = VideoFrameExtractor(config)
+    ranges = extractor.merge_pool()
+    if not ranges:
+        raise RuntimeError("Gagal membangun pool data/raw/merged.")
+
+
+def _guard_pool_fresh(config: dict, pool: Path) -> None:
+    """
+    Tolak pool ``merged`` yang tertinggal dari hasil ekstraksi terbaru.
+
+    Kalau jumlah frame di folder per-video tidak sama dengan jumlah frame
+    di ``merged``, berarti ada ekstrasi yang belum di-merge - staging akan
+    memakai frame basi dan labelnya tidak akan cocok.
+    """
+    if pool != ROOT / "data" / "raw" / "merged":
+        return
+
+    raw_dir = ROOT / "data" / "raw"
+    if not raw_dir.is_dir():
+        return
+
+    stems = [Path(v).stem for v in (config.get("dataset", {}).get("video_files") or [])]
+    dirs = [raw_dir / s for s in stems] if stems else [
+        d for d in sorted(raw_dir.iterdir())
+        if d.is_dir() and d.name != "merged"]
+
+    per_video = sum(len(_list_images(d)) for d in dirs if d.is_dir())
+    merged = len(_list_images(pool))
+    if per_video and per_video != merged:
+        raise RuntimeError(
+            f"Pool merged basi: {per_video} frame di folder per-video vs "
+            f"{merged} frame di merged. Jalankan dulu: "
+            "python main.py workflow --stage merge")
 
 
 def stage_stage(config: dict, opts) -> None:
@@ -113,20 +170,58 @@ def stage_stage(config: dict, opts) -> None:
     if not images:
         raise FileNotFoundError(f"Tidak ada gambar di pool: {pool}")
 
+    _guard_pool_fresh(config, pool)
+
     STAGING_IMAGES.mkdir(parents=True, exist_ok=True)
     STAGING_LABELS.mkdir(parents=True, exist_ok=True)
 
-    copied = skipped = 0
+    pool_stems = {img.stem for img in images}
+
+    copied = refreshed = skipped = 0
     for img in images:
         dst = STAGING_IMAGES / img.name
+        stale_label = STAGING_LABELS / (img.stem + ".txt")
         if dst.exists():
-            skipped += 1
-            continue
+            src_stat, dst_stat = img.stat(), dst.stat()
+            same = (src_stat.st_size == dst_stat.st_size
+                    and int(src_stat.st_mtime) == int(dst_stat.st_mtime))
+            if same:
+                skipped += 1
+                continue
+            # Pool berubah (ekstrak ulang): gambar diganti DAN label lama
+            # dibuang - kalau label dibiarkan, gambar baru terpasang label
+            # dari frame lama yang isinya beda.
+            dst.unlink()
+            if stale_label.is_file():
+                stale_label.unlink()
+            refreshed += 1
         shutil.copy2(img, dst)
         copied += 1
+
+    # Buang yatim: gambar staging yang tidak ada lagi di pool, dan label
+    # yang gambar-nya tidak ada. Kalau dibiarkan, split ikut memindahkan
+    # frame yang sudah tidak dipakai.
+    orphans_img = orphans_lbl = 0
+    staging_stems = set()
+    for img in _list_images(STAGING_IMAGES):
+        if img.stem not in pool_stems:
+            img.unlink()
+            orphans_img += 1
+        else:
+            staging_stems.add(img.stem)
+    for lbl in list(STAGING_LABELS.glob("*.txt")):
+        if lbl.stem not in staging_stems:
+            lbl.unlink()
+            orphans_lbl += 1
+
     print(f"[OK] Pool      : {pool}")
     print(f"[OK] Disalin   : {copied} gambar baru -> {STAGING_IMAGES}")
+    if refreshed:
+        print(f"[OK] Diganti   : {refreshed} gambar basi (label ikut dibuang)")
     print(f"[OK] Ada       : {skipped} gambar sudah di staging")
+    if orphans_img or orphans_lbl:
+        print(f"[OK] Dibuang   : {orphans_img} gambar yatim, "
+              f"{orphans_lbl} label yatim")
 
 
 def stage_annotate(config: dict, opts) -> None:
@@ -163,13 +258,17 @@ def stage_split(config: dict, opts) -> None:
         raise FileNotFoundError(
             f"Tidak ada gambar di {STAGING_IMAGES}. Jalankan tahap "
             "'stage' + 'annotate' dulu.")
-    if not _list_images(STAGING_LABELS):
+    if not _list_labels(STAGING_LABELS):
         raise FileNotFoundError(
             f"Tidak ada label di {STAGING_LABELS}. Jalankan tahap "
             "'annotate' dulu - split tanpa label akan membuat seluruh "
             "dataset jadi label kosong.")
 
     preparator = DatasetPreparator(config)
+    # Test dipilih duluan (grup utuh, tersebar) supaya split_dataset tinggal
+    # membagi sisa frame ke train/val - frame test tidak pernah bocor ke sana.
+    preparator.select_test_groups(STAGING_DIR, test_ratio=opts.test_ratio,
+                                  seed=opts.seed)
     preparator.split_dataset(STAGING_DIR, train_ratio=opts.ratio,
                              seed=opts.seed, clean=True)
 
@@ -196,6 +295,7 @@ def stage_train(config: dict, opts) -> None:
 
 STAGE_FUNCS: Dict[str, Callable] = {
     "extract": stage_extract,
+    "merge": stage_merge,
     "stage": stage_stage,
     "annotate": stage_annotate,
     "split": stage_split,
@@ -214,7 +314,7 @@ def build_plan(opts) -> List[str]:
         return [opts.stage]
     plan: List[str] = []
     if opts.extract:
-        plan.append("extract")
+        plan += ["extract", "merge"]
     plan += ["stage", "annotate"]
     if opts.rebuild:
         plan.append("split")
@@ -261,10 +361,15 @@ def main() -> int:
     ext = parser.add_argument_group("extract")
     ext.add_argument("--interval", type=int, default=30,
                      help="ekstrak setiap N frame (default: 30)")
+    ext.add_argument("--max-frames", type=int, default=500,
+                     help="frame maksimum per video (default: 500)")
 
     spl = parser.add_argument_group("split")
     spl.add_argument("--ratio", type=float, default=0.8,
                      help="rasio train (default: 0.8)")
+    spl.add_argument("--test-ratio", type=float, default=0.1,
+                     help="porsi frame untuk test set, grup utuh tersebar "
+                          "antar video (default: 0.1)")
     spl.add_argument("--seed", type=int, default=42,
                      help="seed shuffle split (default: 42)")
 

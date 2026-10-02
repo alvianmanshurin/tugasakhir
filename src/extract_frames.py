@@ -22,6 +22,8 @@ Perubahan terhadap versi lama:
 """
 
 import argparse
+import re
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -32,9 +34,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cv2
 import yaml
 
-from utils.paths import DATA_DIR, load_config
+from utils.paths import CONFIG_PATH, DATA_DIR, ROOT, load_config
 
 VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv")
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
 class VideoFrameExtractor:
@@ -62,6 +65,13 @@ class VideoFrameExtractor:
         self.output_dir = DATA_DIR / "raw"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Daftar video yang menjadi bagian dataset. Folder sumber juga
+        # berisi video hasil proses sendiri (*_output.mp4) - kalau tidak
+        # difilter, extract-all mencampur frame turunan ke pool dataset.
+        listed = dataset_cfg.get("video_files") or []
+        self.video_files = ([str(v) for v in listed]
+                            if isinstance(listed, list) else [])
+
     def list_videos(self):
         """
         List semua video yang tersedia di direktori sumber.
@@ -79,6 +89,18 @@ class VideoFrameExtractor:
         # Cari semua ekstensi video, bukan hanya .MOV dan .mp4.
         videos = sorted({p for ext in VIDEO_EXTS
                          for p in video_dir.glob(f"*{ext}")})
+
+        # Filter ke dataset.video_files bila diisi (lihat __init__).
+        if self.video_files:
+            wanted = {Path(v).name.lower() for v in self.video_files}
+            skipped = [v.name for v in videos if v.name.lower() not in wanted]
+            videos = [v for v in videos if v.name.lower() in wanted]
+            for name in sorted(skipped):
+                print(f"  [LEWAT] {name} (bukan di dataset.video_files)")
+            missing = sorted(wanted - {v.name.lower() for v in videos})
+            for name in missing:
+                print(f"  [HILANG] {name} (ada di config, tidak ada di folder)")
+
         print(f"\n[INFO] Ditemukan {len(videos)} video di: {video_dir}")
         for v in videos:
             size_mb = v.stat().st_size / (1024 * 1024)
@@ -112,7 +134,7 @@ class VideoFrameExtractor:
         return info
 
     def extract_frames(self, video_path, output_dir=None, interval=30,
-                       max_frames=None, resize=None):
+                       max_frames=None, resize=None, clean=None):
         """
         Ekstrak frame dari video.
 
@@ -129,6 +151,13 @@ class VideoFrameExtractor:
             interval: ekstrak setiap N frame
             max_frames: jumlah frame maksimum
             resize: tuple (width, height) untuk resize
+            clean: hapus frame lama di folder output sebelum menulis.
+                Default (None): bersih HANYA untuk folder bawaan
+                ``data/raw/<nama video>`` (data turunan milik alat ini);
+                folder ``--output`` eksplisit butuh ``clean=True`` eksplisit.
+                Kenapa: penomoran melanjutkan file yang sudah ada, jadi
+                ekstrak ulang dengan interval berbeda menumpuk frame lama
+                bercampur frame baru.
 
         Returns:
             Daftar path file frame yang diekstrak
@@ -186,6 +215,19 @@ class VideoFrameExtractor:
         extracted_files = []
         start_time = time.time()
 
+        # Bersihkan folder output lama supaya penomoran mulai dari nol dan
+        # frame interval lama tidak ikut terbawa. Dilakukan SETELAH video
+        # terbuka sukses, jadi video rusak tidak menghapus data lama.
+        if clean is None:
+            clean = output_dir is None
+        if clean:
+            stale = list(out_dir.glob("*.jpg"))
+            for old in stale:
+                old.unlink()
+            if stale:
+                print(f"[INFO] {len(stale)} frame lama dihapus "
+                      "(ekstrak ulang bersih)")
+
         # Hitung file yang sudah ada untuk melanjutkan penomoran
         existing = len(list(out_dir.glob("*.jpg")))
 
@@ -232,7 +274,8 @@ class VideoFrameExtractor:
 
         return extracted_files
 
-    def extract_all_videos(self, interval=30, max_frames_per_video=500, resize=None):
+    def extract_all_videos(self, interval=30, max_frames_per_video=500,
+                           resize=None, clean=None):
         """
         Ekstrak frame dari semua video.
 
@@ -240,6 +283,8 @@ class VideoFrameExtractor:
             interval: ekstrak setiap N frame
             max_frames_per_video: frame maksimum per video
             resize: tuple (width, height) untuk resize
+            clean: teruskan ke :meth:`extract_frames` (None = default:
+                bersih folder output bawaan)
         Returns:
             Total frame yang diekstrak, atau ``None`` bila tidak ada video
             (supaya ``main()`` bisa mengembalikan exit code gagal).
@@ -266,6 +311,7 @@ class VideoFrameExtractor:
                 interval=interval,
                 max_frames=max_frames_per_video,
                 resize=resize,
+                clean=clean,
             )
             total_extracted += len(files)
 
@@ -300,6 +346,155 @@ class VideoFrameExtractor:
             yaml.dump(summary, f, default_flow_style=False, allow_unicode=True)
 
         print(f"\n[INFO] Ringkasan tersimpan: {summary_path}")
+
+    # ------------------------------------------------------------------
+    # Pool merged + video_ranges
+    # ------------------------------------------------------------------
+
+    def merge_pool(self, config_path=None):
+        """
+        Gabungkan frame per video menjadi pool ``data/raw/merged``.
+
+        Pool gabungan dibangun ULANG dari nol (folder merged dikosongkan
+        dulu), nomor ``merged_NNNNN`` berurutan mengikuti urutan
+        ``dataset.video_files`` di config. Setelah itu
+        ``dataset.video_ranges`` di config.yaml ikut diperbarui supaya
+        grouping split tetap menghormati batas antar kamera (blok
+        group_size memotong batas video kalau rentangnya basi).
+
+        Args:
+            config_path: file config yang akan ditulis video_ranges-nya
+                (default: config/config.yaml)
+
+        Returns:
+            dict nama video -> [nomor_awal, nomor_akhir]
+        """
+        print("\n" + "=" * 60)
+        print("GABUNG POOL FRAME -> data/raw/merged")
+        print("=" * 60)
+
+        if self.video_files:
+            ordered = [Path(v).stem for v in self.video_files]
+        else:
+            ordered = sorted(d.name for d in self.output_dir.iterdir()
+                             if d.is_dir() and d.name != "merged")
+
+        sources = []
+        for stem in ordered:
+            src_dir = self.output_dir / stem
+            if not src_dir.is_dir():
+                print(f"  [HILANG] {src_dir} (lewati)")
+                continue
+            imgs = sorted(p for p in src_dir.iterdir()
+                          if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+            if not imgs:
+                print(f"  [KOSONG] {src_dir}")
+                continue
+            sources.append((stem, imgs))
+
+        if not sources:
+            raise FileNotFoundError(
+                "Tidak ada folder frame per video di "
+                f"{self.output_dir}. Jalankan ekstraksi dulu: "
+                "python main.py workflow --extract")
+
+        merged_dir = self.output_dir / "merged"
+        merged_dir.mkdir(parents=True, exist_ok=True)
+        for old in merged_dir.iterdir():
+            if old.is_file() and old.suffix.lower() in IMAGE_EXTS:
+                old.unlink()
+
+        ranges: dict = {}
+        idx = 0
+        for stem, imgs in sources:
+            start = idx
+            for img in imgs:
+                dst = merged_dir / f"merged_{idx:05d}{img.suffix.lower()}"
+                shutil.copy2(img, dst)
+                idx += 1
+            ranges[stem] = [start, idx - 1]
+            print(f"  {stem:<10} {len(imgs):>4} frame -> "
+                  f"merged_{start:05d}..{idx - 1:05d}")
+
+        print(f"[OK] Total {idx} frame di {merged_dir}")
+
+        cfg_path = Path(config_path) if config_path else CONFIG_PATH
+        if cfg_path.is_file():
+            if not self._update_video_ranges(cfg_path, ranges):
+                print("[PERINGATAN] video_ranges di config TIDAK bisa "
+                      "diperbarui otomatis - perbarui manual!")
+        else:
+            print(f"[PERINGATAN] Config tidak ditemukan: {cfg_path}")
+            print("[PERINGATAN] video_ranges tidak diperbarui.")
+        return ranges
+
+    @staticmethod
+    def _update_video_ranges(config_path, ranges) -> bool:
+        """
+        Tulis ulang blok ``dataset.video_ranges`` di config.yaml.
+
+        Dilakukan secara tekstual (baris per baris), bukan lewat
+        ``yaml.dump``, karena config.yaml berisi banyak komentar yang akan
+        hilang kalau file di-serialize ulang. Entry di blok diganti tepat
+        dengan isi ``ranges``; bila blok tidak ditemukan atau hasil tulis
+        tidak valid secara YAML, file dikembalikan seperti semula.
+        """
+        path = Path(config_path)
+        original = path.read_text(encoding="utf-8")
+        lines = original.splitlines(keepends=True)
+
+        start = None
+        for i, line in enumerate(lines):
+            if re.match(r"^  video_ranges:\s*(#.*)?$", line):
+                start = i
+                break
+        if start is None:
+            print("[INFO] Blok video_ranges tidak ditemukan di "
+                  f"{path.name} - melewati update.")
+            return False
+
+        # Batas blok: baris indentasi >= 4 (entry/komentar di dalam blok).
+        # Komentar indentasi 2 milik kunci berikutnya, jadi berhenti di sana.
+        end = start + 1
+        while end < len(lines):
+            line = lines[end]
+            if line.startswith("    "):
+                end += 1
+                continue
+            blank_next_inside = (not line.strip() and end + 1 < len(lines)
+                                 and lines[end + 1].startswith("    "))
+            if blank_next_inside:
+                end += 1
+                continue
+            break
+
+        entry_re = re.compile(r"^    ([A-Za-z0-9_.\-]+):\s*\[.*\].*$")
+        inside = lines[start + 1:end]
+        comments = [l for l in inside if not entry_re.match(l)]
+        entries = [f"    {name}: [{lo}, {hi}]\n"
+                   for name, (lo, hi) in ranges.items()]
+
+        old_entries = [l for l in inside if entry_re.match(l)]
+        lines[start + 1:end] = comments + entries
+        updated = "".join(lines)
+
+        try:
+            parsed = yaml.safe_load(updated)
+            if not isinstance(parsed, dict):
+                raise ValueError("config bukan mapping")
+        except (yaml.YAMLError, ValueError) as exc:
+            path.write_text(original, encoding="utf-8")
+            print(f"[ERROR] Update video_ranges menghasilkan YAML invalid "
+                  f"({exc}); config dikembalikan.")
+            return False
+
+        path.write_text(updated, encoding="utf-8")
+        print(f"[OK] video_ranges diperbarui di {path.name}:")
+        for line in (l for l in old_entries if l.strip()):
+            print(f"    - {line.strip()}")
+        for line in entries:
+            print(f"    + {line.strip()}")
+        return True
 
     def split_to_trainval(self, source_dir=None, train_ratio=0.8, seed=42,
                           clean=False):
@@ -344,7 +539,8 @@ def main() -> int:
         description="Ekstrak frame dari video untuk dataset deteksi kendaraan"
     )
     parser.add_argument("--action", type=str, default="extract",
-                        choices=["list", "info", "extract", "extract-all", "split"],
+                        choices=["list", "info", "extract", "extract-all",
+                                 "merge", "split"],
                         help="Aksi yang akan dilakukan")
     parser.add_argument("--config", type=str, default=None,
                         help="path config.yaml (default: config/config.yaml)")
@@ -362,7 +558,8 @@ def main() -> int:
                         help="Rasio split train")
     parser.add_argument("--seed", type=int, default=42, help="Seed shuffle split")
     parser.add_argument("--clean", action="store_true",
-                        help="Hapus isi folder train/val sebelum split")
+                        help="Hapus isi folder output (frame lama saat "
+                             "extract) / folder train-val (saat split)")
     args = parser.parse_args()
 
     try:
@@ -400,6 +597,7 @@ def main() -> int:
             interval=args.interval,
             max_frames=args.max_frames,
             resize=tuple(args.resize) if args.resize else None,
+            clean=True if args.clean else None,
         )
         return 0 if files else 1
 
@@ -408,8 +606,20 @@ def main() -> int:
             interval=args.interval,
             max_frames_per_video=args.max_frames,
             resize=tuple(args.resize) if args.resize else None,
+            clean=True if args.clean else None,
         )
         return 0 if total else 1
+
+    if args.action == "merge":
+        cfg_path = Path(args.config) if args.config else CONFIG_PATH
+        if not cfg_path.is_absolute():
+            cfg_path = ROOT / cfg_path
+        try:
+            extractor.merge_pool(cfg_path)
+        except FileNotFoundError as exc:
+            print(f"[ERROR] {exc}")
+            return 1
+        return 0
 
     # action == "split"
     return extractor.split_to_trainval(args.output, args.ratio,

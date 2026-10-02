@@ -16,8 +16,10 @@ Perbaikan terhadap versi lama:
 
 import argparse
 import json
+import os
 import random
 import shutil
+import stat
 import sys
 from collections import Counter
 from pathlib import Path
@@ -30,6 +32,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from utils.paths import load_config  # noqa: E402
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+def rmtree_force(path: Path) -> None:
+    """
+    Hapus folder beserta isinya, tahan atribut ReadOnly (khas Windows).
+
+    Folder dataset kadang terlanjur punya atribut ReadOnly (mis. hasil
+    ekstrak arsip atau setelan lama). Dalam kasus itu shutil.rmtree
+    menghapus semua isi dengan sukses lalu GAGAL di os.rmdir terakhir
+    dengan WinError 5 "Access is denied" - split --clean berhenti di
+    tengah dan train/val jadi setengah kosong.
+    """
+    for target in [path, *path.rglob("*")]:
+        try:
+            # Di Windows chmod(S_IWRITE) = melepas flag read-only.
+            os.chmod(target, stat.S_IWRITE)
+        except OSError:
+            pass
+    shutil.rmtree(path)
 
 
 def list_images(directory: Path) -> List[Path]:
@@ -256,6 +277,207 @@ class DatasetPreparator:
     # Split
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _count_classes(groups: Dict[str, List[Path]],
+                       labels_dir: Path) -> Dict[str, Counter]:
+        """Hitung instans tiap kelas per grup dari file label YOLO."""
+        counts: Dict[str, Counter] = {}
+        for key, files in groups.items():
+            per_class: Counter = Counter()
+            for f in files:
+                lbl = labels_dir / (f.stem + ".txt")
+                if not lbl.is_file():
+                    continue
+                for line in lbl.read_text(encoding="utf-8").splitlines():
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    try:
+                        per_class[int(float(parts[0]))] += 1
+                    except ValueError:
+                        continue  # baris rusak diabaikan (validate nanti lapor)
+            counts[key] = per_class
+        return counts
+
+    @staticmethod
+    def _stratified_group_split(groups: Dict[str, List[Path]],
+                                counts: Dict[str, Counter],
+                                keys: List[str],
+                                train_ratio: float) -> Tuple[List[str], List[str]]:
+        """
+        Bagi grup utuh ke train/val dengan stratifikasi kelas (greedy).
+
+        Grup diurutkan acak dulu, lalu tiap grup ditaruh ke split yang
+        menaikkan deviasi distribusi kelas PALING KECIL. Deviasi dinormalkan
+        per kelas (dibagi jumlah instans kelas itu), jadi kelas langka seperti
+        bus ikut menentukan - tanpa ini, shuffle polos bisa menghabiskan
+        hampir semua instance bus ke train dan val hanya menyisakan 1 bus,
+        sehingga metrik val tidak bisa mengukur kelas itu sama sekali.
+
+        Target per split: ``train_ratio`` dari tiap kelas DAN dari jumlah
+        gambar. Grup tidak pernah dipecah (tetap anti-leakage).
+        """
+        total: Counter = Counter()
+        for per_class in counts.values():
+            total.update(per_class)
+        n_total = sum(len(v) for v in groups.values())
+        if n_total == 0 or not total:
+            # Tidak ada instans sama sekali: pecah berdasar gambar saja.
+            target_img = n_total * train_ratio
+            train_keys, acc = [], 0
+            for k in keys:
+                if acc >= target_img:
+                    break
+                train_keys.append(k)
+                acc += len(groups[k])
+            train_set = set(train_keys)
+            return train_keys, [k for k in keys if k not in train_set]
+
+        target = {
+            "train": {c: total[c] * train_ratio for c in total},
+            "val": {c: total[c] * (1 - train_ratio) for c in total},
+        }
+        target_img = {"train": n_total * train_ratio,
+                      "val": n_total * (1 - train_ratio)}
+        assigned = {"train": Counter(), "val": Counter()}
+        imgs = {"train": 0, "val": 0}
+        result: Dict[str, List[str]] = {"train": [], "val": []}
+
+        def delta(split: str, g: Counter, n: int) -> float:
+            """Kenaikan deviasi bila grup masuk ke ``split``."""
+            d = 0.0
+            for c, target_c in target[split].items():
+                before = abs(assigned[split][c] - target_c)
+                after = abs(assigned[split][c] + g[c] - target_c)
+                d += (after - before) / max(total[c], 1)
+            d += (abs(imgs[split] + n - target_img[split])
+                  - abs(imgs[split] - target_img[split])) / max(n_total, 1)
+            return d
+
+        for key in keys:
+            g = counts[key]
+            n = len(groups[key])
+            # Urutan tetap train dulu supaya seri (deviasi sama) deterministik.
+            cost_train, cost_val = delta("train", g, n), delta("val", g, n)
+            chosen = "train" if cost_train <= cost_val else "val"
+            result[chosen].append(key)
+            assigned[chosen].update(g)
+            imgs[chosen] += n
+
+        return result["train"], result["val"]
+
+    def select_test_groups(self, source_dir, test_ratio: float = 0.1,
+                           seed: int = 42) -> dict:
+        """
+        Pilih beberapa grup UTUH sebagai split test, tersebar antar video.
+
+        Kenapa grup utuh: frame dalam satu grup adalah potongan video yang
+        berdekatan (kendaraan yang sama bisa muncul di frame tetangga).
+        Kalau test berisi frame acak, sisanya tetap ada di train/val -
+        model sudah "melihat" sekitarnya dan metrik test tergelembung.
+
+        Kenapa tersebar: test yang hanya dari satu kamera tidak
+        merepresentasikan kondisi gerbang. Grup diacak per video lalu
+        dipilih round-robin antar video sampai mencapai ``test_ratio``.
+
+        Seleksi deterministik (seed) - rebuild ulang dengan seed sama
+        menghasilkan test set yang sama.
+
+        Args:
+            source_dir: pool berisi images/ dan labels/ (data/staging)
+            test_ratio: porsi target frame untuk test (default 0.1)
+            seed: seed pengacakan pemilihan grup
+
+        Returns:
+            dict jumlah grup, frame, dan sebaran per video
+        """
+        print("\n" + "=" * 60)
+        print("SELEKSI TEST SET (grup utuh, tersebar antar video)")
+        print("=" * 60)
+
+        source = Path(source_dir)
+        images_dir = source / "images"
+        labels_dir = source / "labels"
+        image_files = list_images(images_dir)
+        if not image_files:
+            raise FileNotFoundError(f"Tidak ada gambar di {images_dir}")
+        if not 0 < test_ratio < 1:
+            raise ValueError(f"--test-ratio harus di antara 0 dan 1, "
+                             f"dapat {test_ratio}")
+
+        groups: Dict[str, List[Path]] = {}
+        for f in image_files:
+            groups.setdefault(self.key_for(f.stem), []).append(f)
+
+        # Kunci grup berbentuk "NAMA_VIDEO#blok" (video_ranges aktif) atau
+        # "prefix#blok". Tanpa video_ranges semua frame dari video beda bisa
+        # berada di satu "video" - sebaran round-robin tetap dijalankan.
+        per_video: Dict[str, List[str]] = {}
+        for key in sorted(groups):
+            video = key.split("#", 1)[0]
+            per_video.setdefault(video, []).append(key)
+
+        rng = random.Random(seed)
+        for keys in per_video.values():
+            rng.shuffle(keys)
+
+        target = len(image_files) * test_ratio
+        chosen: List[str] = []
+        total = 0
+        cursor = {v: 0 for v in sorted(per_video)}
+        while total < target:
+            progressed = False
+            for video in sorted(per_video):
+                i = cursor[video]
+                if i >= len(per_video[video]):
+                    continue
+                cursor[video] = i + 1
+                chosen.append(per_video[video][i])
+                total += len(groups[per_video[video][i]])
+                progressed = True
+                if total >= target:
+                    break
+            if not progressed:
+                break
+
+        if not chosen:
+            raise RuntimeError("Tidak ada grup terpilih untuk test.")
+
+        test_images_dir = Path(self.dataset_cfg["test_images"])
+        test_labels_dir = Path(self.dataset_cfg["test_labels"])
+        if test_images_dir.is_dir():
+            rmtree_force(test_images_dir)
+        if test_labels_dir.is_dir():
+            rmtree_force(test_labels_dir)
+        test_images_dir.mkdir(parents=True, exist_ok=True)
+        test_labels_dir.mkdir(parents=True, exist_ok=True)
+
+        per_video_count: Dict[str, int] = {}
+        empty = 0
+        for key in sorted(chosen):
+            video = key.split("#", 1)[0]
+            for img in groups[key]:
+                shutil.copy2(img, test_images_dir / img.name)
+                per_video_count[video] = per_video_count.get(video, 0) + 1
+                lbl = labels_dir / (img.stem + ".txt")
+                dst_lbl = test_labels_dir / (img.stem + ".txt")
+                if lbl.is_file():
+                    shutil.copy2(lbl, dst_lbl)
+                else:
+                    dst_lbl.write_text("")
+                    empty += 1
+
+        print(f"Target           : {test_ratio * 100:.0f}% dari "
+              f"{len(image_files)} frame ({target:.0f})")
+        print(f"Grup terpilih    : {len(chosen)} grup -> {total} frame")
+        for video in sorted(per_video_count):
+            print(f"  {video:<10} {per_video_count[video]:>4} frame")
+        if empty:
+            print(f"[OK] {empty} label kosong dibuat (tanpa kendaraan)")
+
+        return {"groups": len(chosen), "frames": total,
+                "per_video": per_video_count}
+
     def split_dataset(self, source_dir, train_ratio: float = 0.8, seed: int = 42,
                       clean: bool = False) -> dict:
         """
@@ -287,6 +509,25 @@ class DatasetPreparator:
         if not image_files:
             raise FileNotFoundError(f"Tidak ada gambar di {images_dir}")
 
+        # Split test adalah hold-out: frame yang namanya sudah ada di test
+        # tidak boleh ikut train/val, walau isinya nanti berbeda. Tanpa ini,
+        # split_dataset (yang membagi SEMUA gambar sumber) menaruh frame
+        # dengan nama yang sama ke dua sisi sekaligus.
+        test_images_cfg = self.dataset_cfg.get("test_images")
+        test_labels_cfg = self.dataset_cfg.get("test_labels")
+        test_files = list_images(Path(test_images_cfg)) if test_images_cfg else []
+        test_stems = {p.stem for p in test_files}
+        if test_stems:
+            kept = [f for f in image_files if f.stem not in test_stems]
+            if len(kept) != len(image_files):
+                print(f"[INFO] {len(image_files) - len(kept)} frame "
+                      "dieksklusi dari train/val (sudah di split test)")
+            image_files = kept
+            if not image_files:
+                raise FileNotFoundError(
+                    "Semua frame sumber sudah berada di split test - "
+                    "tidak ada sisa untuk train/val.")
+
         groups: Dict[str, List[Path]] = {}
         for f in image_files:
             groups.setdefault(self.key_for(f.stem), []).append(f)
@@ -295,16 +536,9 @@ class DatasetPreparator:
         rng = random.Random(seed)
         rng.shuffle(keys)
 
-        # Target rasio per gambar, bukan per grup, supaya rasio tetap mendekati
-        # yang diminta walau ukuran grup tidak seragam.
-        target_train = len(image_files) * train_ratio
-        train_keys, n_train = [], 0
-        for k in keys:
-            if n_train >= target_train:
-                break
-            train_keys.append(k)
-            n_train += len(groups[k])
-        val_keys = [k for k in keys if k not in set(train_keys)]
+        group_counts = self._count_classes(groups, labels_dir)
+        train_keys, val_keys = self._stratified_group_split(
+            groups, group_counts, keys, train_ratio)
 
         train_files = [f for k in train_keys for f in groups[k]]
         val_files = [f for k in val_keys for f in groups[k]]
@@ -314,6 +548,16 @@ class DatasetPreparator:
         print(f"Train            : {len(train_files)} gambar "
               f"({len(train_keys)} grup, {train_ratio * 100:.0f}% target)")
         print(f"Val              : {len(val_files)} gambar ({len(val_keys)} grup)")
+        if any(group_counts.values()):
+            train_cls, val_cls = Counter(), Counter()
+            for k in train_keys:
+                train_cls.update(group_counts[k])
+            for k in val_keys:
+                val_cls.update(group_counts[k])
+            print("Instans per kelas (train / val):")
+            for c in sorted(set(train_cls) | set(val_cls)):
+                name = self.class_names.get(c, str(c))
+                print(f"  {name:<8} {train_cls[c]:>5} / {val_cls[c]}")
         if set(train_keys) & set(val_keys):
             raise AssertionError("Leakage: grup ada di train DAN val")
 
@@ -328,7 +572,7 @@ class DatasetPreparator:
                 for key in (f"{split}_images", f"{split}_labels"):
                     d = Path(self.dataset_cfg[key])
                     if d.is_dir():
-                        shutil.rmtree(d)
+                        rmtree_force(d)
 
         for split in ("train", "val"):
             Path(self.dataset_cfg[f"{split}_images"]).mkdir(parents=True, exist_ok=True)
@@ -372,8 +616,57 @@ class DatasetPreparator:
             print(f"[PERINGATAN] {no_label} gambar tidak punya file label. "
                   "Jalankan --action fix-labels bila ini tidak disengaja.")
 
+        # Split test juga harus berasal dari versi pool yang sama dengan
+        # train/val. Frame test yang dibiarkan dari ekstraksi lama bisa
+        # IDENTIK dengan frame train baru (beda nama, satu frame sumber
+        # yang sama) - yaitu leakage test -> train.
+        if clean and test_files:
+            self._refresh_test_split(source, test_files, test_labels_cfg)
+
         return {"train": copied["train"], "val": copied["val"],
                 "groups": len(groups), "no_label": no_label}
+
+    def _refresh_test_split(self, source: Path, test_files: List[Path],
+                            test_labels_cfg: Optional[str]) -> None:
+        """
+        Timpa gambar/label test dengan versi terbaru dari ``source``.
+
+        Nama file test dipertahankan (itu hold-out terpilih), hanya isi dan
+        label-nya yang disegarkan dari pool staging supaya konsisten dengan
+        train/val hasil split ini. Label kosong dibuat bila sumber tidak
+        punya (gambar tanpa kendaraan).
+        """
+        src_images = source / "images"
+        src_labels = source / "labels"
+        dst_labels = Path(test_labels_cfg) if test_labels_cfg else None
+
+        refreshed = empty = skipped = 0
+        for img in test_files:
+            src_img = src_images / img.name
+            if not src_img.is_file():
+                skipped += 1
+                print(f"  [LEWAT] {img.name} tidak ada di pool sumber "
+                      "(test tetap memakai isi lama)")
+                continue
+            shutil.copy2(src_img, img)
+            refreshed += 1
+
+            src_lbl = src_labels / (img.stem + ".txt")
+            dst_lbl = dst_labels / (img.stem + ".txt") if dst_labels else None
+            if dst_lbl is None:
+                continue
+            if src_lbl.is_file():
+                shutil.copy2(src_lbl, dst_lbl)
+            else:
+                dst_lbl.write_text("")
+                empty += 1
+
+        if refreshed:
+            print(f"[OK] test: {refreshed} gambar disegarkan dari pool "
+                  f"({empty} label kosong dibuat)")
+        if skipped:
+            print(f"[PERINGATAN] {skipped} gambar test tidak ada di pool - "
+                  "pertimbangkan regenerasi split test.")
 
     # ------------------------------------------------------------------
     # Laporan split tanpa mengubah file
@@ -660,12 +953,15 @@ def main() -> int:
     parser.add_argument("--config", default=None, help="path config.yaml")
     parser.add_argument("--action", required=True,
                         choices=["validate", "split", "split-report", "yaml",
-                                 "fix-labels", "convert-labelme"],
+                                 "fix-labels", "convert-labelme", "select-test"],
                         help="aksi yang dijalankan. 'split-report' hanya "
-                             "melaporkan kebocoran split tanpa mengubah file.")
+                             "melaporkan kebocoran split tanpa mengubah file. "
+                             "'select-test' pilih grup utuh sbg test set.")
     parser.add_argument("--source", help="direktori sumber")
     parser.add_argument("--output", help="path/ direktori output")
     parser.add_argument("--ratio", type=float, default=0.8, help="rasio split train")
+    parser.add_argument("--test-ratio", type=float, default=0.1,
+                        help="porsi frame untuk test set (default: 0.1)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--clean", action="store_true",
                         help="hapus isi folder train/val sebelum split")
@@ -684,6 +980,12 @@ def main() -> int:
                                      seed=args.seed, clean=args.clean)
         elif args.action == "split-report":
             preparator.report_split_leakage()
+        elif args.action == "select-test":
+            if not args.source:
+                parser.error("--action select-test butuh --source")
+            preparator.select_test_groups(args.source,
+                                          test_ratio=args.test_ratio,
+                                          seed=args.seed)
         elif args.action == "yaml":
             preparator.create_dataset_yaml(args.output or "data/dataset.yaml")
         elif args.action == "fix-labels":
