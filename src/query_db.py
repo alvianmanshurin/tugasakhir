@@ -8,9 +8,15 @@ atau membuat - database kedua yang kosong. Versi lama juga membaca kunci
 statistik yang sudah tidak ada (``total_detections`` dan ``total``), jadi
 ``--action detail`` berakhir dengan KeyError, dan setiap kesalahan argumen
 keluar dengan exit code 0 sehingga tidak terdeteksi oleh runner.
+
+Export tersedia dalam dua format: ``--format json`` (ringkasan statistik
+satu sesi, perilaku lama) dan ``--format csv`` (baris tabel apa pun -
+detections, frame_stats, sessions, counting_summary, ... - siap dibuka di
+Excel; kalau kolom ``session_id`` ada, dibatasi ``--session``).
 """
 
 import argparse
+import csv as csv_mod
 import sys
 from pathlib import Path
 
@@ -100,6 +106,78 @@ def export_session(db, session_id, output_path=None) -> int:
     return 0
 
 
+def list_tables(db) -> list:
+    """Nama tabel yang ada di database."""
+    return [r[0] for r in db.conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+
+
+def export_csv(db, session_id=None, table="detections", class_name=None,
+               output_path=None) -> int:
+    """
+    Ekspor satu tabel ke CSV (``utf-8-sig`` supaya Excel langsung benar).
+
+    - ``session_id`` diberikan: baris difilter lewat kolom ``session_id``
+      (atau ``id`` untuk tabel ``sessions``); kalau tabel tidak punya
+      keduanya, export ditolak dengan pesan yang jelas.
+    - ``class_name`` diberikan: difilter lewat kolom ``class_name`` bila ada.
+    - Tanpa keduanya: seluruh tabel.
+    """
+    tables = list_tables(db)
+    if table not in tables:
+        print(f"[ERROR] Tabel tidak ada: {table}")
+        print(f"        Tersedia: {', '.join(tables)}")
+        return 1
+
+    cols = [c[1] for c in db.conn.execute(f'PRAGMA table_info("{table}")')]
+    where, params = [], []
+    if session_id is not None:
+        if "session_id" in cols:
+            where.append("session_id = ?")
+            params.append(session_id)
+        elif table == "sessions":
+            where.append("id = ?")
+            params.append(session_id)
+        else:
+            print(f"[ERROR] Tabel {table} tidak punya kolom session_id/id - "
+                  "jalankan tanpa --session untuk seluruh isi tabel.")
+            return 1
+    if class_name:
+        if "class_name" not in cols:
+            print(f"[ERROR] Tabel {table} tidak punya kolom class_name.")
+            return 1
+        where.append("class_name = ?")
+        params.append(class_name)
+
+    query = f'SELECT * FROM "{table}"'
+    if where:
+        query += " WHERE " + " AND ".join(where)
+    query += " ORDER BY rowid"
+    cursor = db.conn.execute(query, params)
+    rows = cursor.fetchall()
+    fieldnames = [d[0] for d in cursor.description]
+
+    if output_path is None:
+        name = f"export_{table}"
+        if session_id is not None:
+            name += f"_session{session_id}"
+        output_path = OUTPUT_DIR / f"{name}.csv"
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv_mod.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(dict(zip(fieldnames, row)))
+
+    print(f"\n[OK] {len(rows)} baris tabel '{table}'"
+          + (f" (sesi #{session_id})" if session_id is not None else "")
+          + f" -> {path}")
+    return 0
+
+
 def show_detections(db, session_id, limit=20, class_name=None) -> int:
     """Tampilkan deteksi dari sesi."""
     if db.get_session(session_id) is None:
@@ -172,11 +250,21 @@ def main() -> int:
                                  "accumulation"],
                         help="Aksi")
     parser.add_argument("--session", type=int, default=None,
-                        help="Session ID (wajib selain action 'sessions')")
+                        help="Session ID (wajib selain action 'sessions'; "
+                             "untuk export csv opsional - tanpa itu seluruh "
+                             "tabel ikut terexport)")
     parser.add_argument("--db", default=str(DB_PATH),
                         help=f"Path database (default: {DB_PATH})")
     parser.add_argument("--output", type=str, default=None,
-                        help="Output path untuk export")
+                        help="Output path untuk export (json/csv)")
+    parser.add_argument("--format", dest="fmt", default="json",
+                        choices=["json", "csv"],
+                        help="Format export: json = ringkasan per sesi, "
+                             "csv = baris tabel mentah (default: json)")
+    parser.add_argument("--table", default=None,
+                        help="Tabel untuk --format csv (default: detections; "
+                             "pilihan: sessions, detections, frame_stats, "
+                             "counting_summary, vehicle_accumulation)")
     parser.add_argument("--class", dest="class_name", default=None,
                         help="Filter kelas (mis. mobil)")
     parser.add_argument("--limit", type=int, default=20, help="Limit hasil")
@@ -192,7 +280,10 @@ def main() -> int:
             show_sessions(db)
             return 0
 
-        if args.session is None:
+        # Export csv bisa jalan tanpa --session (seluruh tabel); aksi lain
+        # tetap wajib --session supaya tidak ada keluaran tak terduga.
+        if args.session is None and not (
+                args.action == "export" and args.fmt == "csv"):
             print(f"[ERROR] --session wajib untuk action '{args.action}'")
             return 1
 
@@ -203,6 +294,14 @@ def main() -> int:
             show_session_detail(db, args.session)
             return 0
         if args.action == "export":
+            if args.fmt == "csv":
+                if args.session is not None and db.get_session(args.session) is None:
+                    print(f"[ERROR] Sesi #{args.session} tidak ada.")
+                    return 1
+                return export_csv(db, session_id=args.session,
+                                  table=args.table or "detections",
+                                  class_name=args.class_name,
+                                  output_path=args.output)
             return export_session(db, args.session, args.output)
         if args.action == "detections":
             return show_detections(db, args.session, args.limit, args.class_name)

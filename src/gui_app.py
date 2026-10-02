@@ -25,7 +25,7 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Optional
 
 import cv2
@@ -34,8 +34,9 @@ from PIL import Image, ImageTk
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pipeline import VehiclePipeline
+from query_db import export_csv
 from utils.database import DetectionDatabase
-from utils.paths import get_model_path, load_config
+from utils.paths import DB_PATH, OUTPUT_DIR, get_model_path, load_config
 
 # Diisi CLI; None = pakai config/config.yaml
 _CONFIG_OVERRIDE: Optional[str] = None
@@ -191,6 +192,11 @@ class VehicleDetectionGUI:
                                   fg="white", font=("Arial", 10, "bold"), height=2,
                                   state=tk.DISABLED)
         self.stop_btn.pack(fill=tk.X)
+        self.database_btn = tk.Button(btn_frame, text="DATABASE",
+                                      command=self._open_db_tab,
+                                      bg=self.success_color, fg="white",
+                                      font=("Arial", 10, "bold"), height=2)
+        self.database_btn.pack(fill=tk.X, pady=(5, 0))
 
         # --- Panel kiri: info --------------------------------------------
         tk.Label(left_panel, text="INFO", font=("Arial", 10, "bold"),
@@ -200,21 +206,35 @@ class VehicleDetectionGUI:
                                  font=("Consolas", 9), wrap=tk.WORD)
         self.info_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
-        # --- Panel kanan: display ----------------------------------------
-        tk.Label(right_panel, text="DISPLAY", font=("Arial", 10, "bold"),
+        # --- Panel kanan: notebook (tab Deteksi & Database) --------------
+        self.notebook = ttk.Notebook(right_panel)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 10))
+        self._setup_ttk_style()
+
+        self.detect_tab = tk.Frame(self.notebook, bg="#3c3c3c")
+        self.db_tab = tk.Frame(self.notebook, bg="#3c3c3c")
+        self.notebook.add(self.detect_tab, text="  Deteksi  ")
+        self.notebook.add(self.db_tab, text="  Database  ")
+
+        # --- Tab Deteksi: display + hasil hitungan ------------------------
+        tk.Label(self.detect_tab, text="DISPLAY", font=("Arial", 10, "bold"),
                  bg="#3c3c3c", fg=self.accent_color).pack(pady=(10, 5))
-        self.display_label = tk.Label(right_panel, bg="#1e1e1e",
+        self.display_label = tk.Label(self.detect_tab, bg="#1e1e1e",
                                      text="No image/video loaded", fg="#666666",
                                      font=("Arial", 12))
         self.display_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
-        # --- Panel kanan: hasil hitungan ---------------------------------
-        tk.Label(right_panel, text="HASIL PENGHITUNGAN", font=("Arial", 10, "bold"),
+        tk.Label(self.detect_tab, text="HASIL PENGHITUNGAN",
+                 font=("Arial", 10, "bold"),
                  bg="#3c3c3c", fg=self.accent_color).pack(anchor=tk.W, padx=10)
-        self.results_text = scrolledtext.ScrolledText(right_panel, height=12,
+        self.results_text = scrolledtext.ScrolledText(self.detect_tab, height=10,
                                                      bg="#1e1e1e", fg=self.fg_color,
                                                      font=("Consolas", 9))
         self.results_text.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        # --- Tab Database -------------------------------------------------
+        self._create_db_tab()
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # --- Status bar ----------------------------------------------------
         status_frame = tk.Frame(self.root, bg="#1e1e1e", height=30)
@@ -254,6 +274,276 @@ class VehicleDetectionGUI:
                        ("All files", "*.*")])
         if path:
             self.source_path.set(path)
+
+    # ------------------------------------------------------------------
+    # Tab Database (MAIN THREAD)
+    #
+    # Baca database saja lewat thread kecil tidak perlu - tabel kecil dan
+    # SQLite WAL, jadi baca singkat di main thread aman (worker tetap
+    # boleh menulis di saat yang sama).
+    # ------------------------------------------------------------------
+
+    def _setup_ttk_style(self) -> None:
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("TNotebook", background=self.bg_color, borderwidth=0)
+        style.configure("TNotebook.Tab", background="#3c3c3c",
+                        foreground="#9a9a9a", padding=[14, 7],
+                        font=("Arial", 10, "bold"))
+        style.map("TNotebook.Tab",
+                  background=[("selected", self.accent_color)],
+                  foreground=[("selected", "white")])
+        style.configure("Treeview", background="#1e1e1e",
+                        fieldbackground="#1e1e1e", foreground="#ffffff",
+                        rowheight=22, font=("Consolas", 9), borderwidth=0)
+        style.configure("Treeview.Heading", background="#4a4a4a",
+                        foreground="#ffffff", font=("Arial", 9, "bold"),
+                        relief="flat")
+        style.map("Treeview",
+                  background=[("selected", self.accent_color)],
+                  foreground=[("selected", "white")])
+        style.configure("Vertical.TScrollbar", background="#4a4a4a",
+                        troughcolor="#2b2b2b", bordercolor="#3c3c3c",
+                        arrowcolor="#ffffff")
+
+    def _create_db_tab(self) -> None:
+        """Isi tab Database: daftar sesi + preview tabel + ekspor CSV."""
+        bar = tk.Frame(self.db_tab, bg="#3c3c3c")
+        bar.pack(fill=tk.X, padx=8, pady=(8, 4))
+        tk.Label(bar, text="DATABASE DETEKSI", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.accent_color).pack(side=tk.LEFT)
+        self.db_status = tk.Label(bar, text="", bg="#3c3c3c", fg="#9a9a9a",
+                                  font=("Arial", 8))
+        self.db_status.pack(side=tk.RIGHT, padx=4)
+
+        btns = tk.Frame(self.db_tab, bg="#3c3c3c")
+        btns.pack(fill=tk.X, padx=8, pady=(0, 6))
+        tk.Button(btns, text="Muat Ulang", command=self._db_refresh
+                  ).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Button(btns, text="Ekspor CSV", command=self._db_export_csv,
+                  bg=self.success_color, fg="white",
+                  font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        tk.Label(btns, text="Tabel:", bg="#3c3c3c",
+                 fg=self.fg_color).pack(side=tk.LEFT, padx=(14, 4))
+        self.db_table_var = tk.StringVar(value="detections")
+        self.db_table_box = ttk.Combobox(
+            btns, textvariable=self.db_table_var, state="readonly", width=22,
+            values=("detections", "frame_stats", "counting_summary",
+                    "vehicle_accumulation", "sessions"))
+        self.db_table_box.pack(side=tk.LEFT)
+        self.db_table_box.bind("<<ComboboxSelected>>",
+                               lambda _e: self._db_load_table())
+
+        # --- Daftar sesi --------------------------------------------------
+        tk.Label(self.db_tab, text="SESI", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.accent_color).pack(anchor=tk.W,
+                                                          padx=10, pady=(4, 2))
+        sess_frame = tk.Frame(self.db_tab, bg="#3c3c3c")
+        sess_frame.pack(fill=tk.X, padx=8)
+        sess_cols = ("id", "nama", "sumber", "waktu", "frame", "status")
+        self.db_sessions = ttk.Treeview(
+            sess_frame, columns=sess_cols, show="headings", height=5,
+            selectmode="browse")
+        for col, title, width in zip(sess_cols,
+                                     ("ID", "Nama", "Sumber", "Waktu",
+                                      "Frame", "Status"),
+                                     (36, 200, 70, 150, 60, 90)):
+            self.db_sessions.heading(col, text=title)
+            self.db_sessions.column(col, width=width, stretch=col in ("nama",))
+        sess_scroll = ttk.Scrollbar(sess_frame, orient=tk.VERTICAL,
+                                    command=self.db_sessions.yview)
+        self.db_sessions.configure(yscrollcommand=sess_scroll.set)
+        self.db_sessions.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        sess_scroll.pack(side=tk.LEFT, fill=tk.Y)
+        self.db_sessions.bind("<<TreeviewSelect>>", self._db_on_session_select)
+
+        # --- Preview tabel ------------------------------------------------
+        head = tk.Frame(self.db_tab, bg="#3c3c3c")
+        head.pack(fill=tk.X, padx=10, pady=(8, 2))
+        tk.Label(head, text="ISI TABEL", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.accent_color).pack(side=tk.LEFT)
+        self.db_row_info = tk.Label(head, text="", bg="#3c3c3c",
+                                    fg="#9a9a9a", font=("Arial", 8))
+        self.db_row_info.pack(side=tk.RIGHT)
+
+        prev_frame = tk.Frame(self.db_tab, bg="#3c3c3c")
+        prev_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        self.db_preview = ttk.Treeview(prev_frame, show="headings",
+                                       selectmode="browse")
+        prev_v = ttk.Scrollbar(prev_frame, orient=tk.VERTICAL,
+                               command=self.db_preview.yview)
+        prev_h = ttk.Scrollbar(prev_frame, orient=tk.HORIZONTAL,
+                               command=self.db_preview.xview)
+        self.db_preview.configure(yscrollcommand=prev_v.set,
+                                  xscrollcommand=prev_h.set)
+        self.db_preview.grid(row=0, column=0, sticky="nsew")
+        prev_v.grid(row=0, column=1, sticky="ns")
+        prev_h.grid(row=1, column=0, sticky="ew")
+        prev_frame.rowconfigure(0, weight=1)
+        prev_frame.columnconfigure(0, weight=1)
+
+        self._db_refresh()
+
+    # --- aksi tab database ------------------------------------------------
+
+    def _open_db_tab(self) -> None:
+        if self.notebook.select() == str(self.db_tab):
+            self._db_refresh()
+        else:  # memilih tab memicu <<NotebookTabChanged>> -> refresh
+            self.notebook.select(self.db_tab)
+
+    def _on_tab_changed(self, _event=None) -> None:
+        try:
+            if self.notebook.select() == str(self.db_tab):
+                self._db_refresh()
+        except tk.TclError:
+            pass
+
+    def _db_refresh(self) -> None:
+        """Muat ulang daftar sesi + isi tabel preview."""
+        prev = self._db_selected_session()
+        self._db_loaded_key = None
+        self.db_sessions.delete(*self.db_sessions.get_children())
+        if not Path(DB_PATH).is_file():
+            self.db_status.config(text=f"Belum ada database: {DB_PATH}")
+            self.db_row_info.config(text="")
+            self._clear_preview("(database belum ada)")
+            return
+
+        db = DetectionDatabase()
+        try:
+            sessions = db.get_sessions()
+        finally:
+            db.close()
+
+        ids = []
+        for s in sessions:
+            sid = int(s["id"])
+            ids.append(sid)
+            self.db_sessions.insert("", tk.END, iid=str(sid), values=(
+                sid, s["session_name"], s["source_type"], s["start_time"],
+                s["total_frames"], s["status"]))
+        self.db_status.config(
+            text=f"{len(sessions)} sesi | {Path(DB_PATH).name}")
+        if not ids:
+            self.db_row_info.config(text="")
+            self._clear_preview("(belum ada sesi)")
+            return
+
+        target = str(prev) if prev in ids else str(ids[0])
+        self.db_sessions.selection_set(target)
+        self.db_sessions.see(target)
+        self._db_load_table()
+
+    def _db_selected_session(self) -> Optional[int]:
+        sel = self.db_sessions.selection()
+        if not sel:
+            return None
+        try:
+            return int(self.db_sessions.item(sel[0], "values")[0])
+        except (ValueError, tk.TclError):
+            return None
+
+    def _db_on_session_select(self, _event=None) -> None:
+        self._db_load_table()
+
+    def _clear_preview(self, note: str = "") -> None:
+        self.db_preview.delete(*self.db_preview.get_children())
+        self.db_preview["columns"] = ()
+        self.db_row_info.config(text=note)
+
+    def _db_load_table(self, force: bool = False) -> None:
+        """
+        Tampilkan isi tabel (difilter sesi terpilih) di treeview.
+
+        Dipanggil juga dari event seleksi yang bisa terpicu dua kali
+        (pemilihan baris + refresh eksplisit), jadi isi yang sama tidak
+        dimuat ulang kecuali ``force=True``.
+        """
+        table = self.db_table_var.get()
+        session_id = self._db_selected_session()
+        key = (table, session_id)
+        if not force and key == getattr(self, "_db_loaded_key", None):
+            return
+        if not Path(DB_PATH).is_file():
+            self._db_loaded_key = key
+            self._clear_preview("(database belum ada)")
+            return
+
+        db = DetectionDatabase()
+        try:
+            if table not in [r[0] for r in db.conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")]:
+                self._db_loaded_key = key
+                self._clear_preview(f"(tabel {table} tidak ada)")
+                return
+            cols = [c[1] for c in db.conn.execute(
+                f'PRAGMA table_info("{table}")')]
+            where, params = [], []
+            if session_id is not None:
+                if "session_id" in cols:
+                    where.append("session_id = ?")
+                    params.append(session_id)
+                elif table == "sessions":
+                    where.append("id = ?")
+                    params.append(session_id)
+            where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+            total = db.conn.execute(
+                f'SELECT COUNT(*) FROM "{table}"{where_sql}',
+                params).fetchone()[0]
+            cursor = db.conn.execute(
+                f'SELECT * FROM "{table}"{where_sql} ORDER BY rowid LIMIT 500',
+                params)
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+        finally:
+            db.close()
+
+        self._db_loaded_key = key
+        self.db_preview.delete(*self.db_preview.get_children())
+        self.db_preview["columns"] = cols
+        for i, col in enumerate(cols):
+            self.db_preview.heading(col, text=col)
+            width = max(70, min(220, 10 + 8 * max(
+                len(col), *(len(str(r[i])) for r in rows[:50]))))
+            self.db_preview.column(col, width=width, stretch=False)
+        for row in rows:
+            self.db_preview.insert("", tk.END, values=[
+                "" if v is None else v for v in row])
+        self.db_row_info.config(
+            text=(f"{len(rows)} dari {total} baris"
+                  + (f" (sesi #{session_id})" if session_id is not None else "")
+                  + (" - menampilkan 500 pertama" if total > len(rows) else "")))
+
+    def _db_export_csv(self) -> None:
+        """Simpan tabel (opsional per sesi) ke CSV via dialog simpan."""
+        table = self.db_table_var.get()
+        session_id = self._db_selected_session()
+        default_name = (f"export_{table}"
+                        + (f"_session{session_id}" if session_id is not None
+                           else "") + ".csv")
+        path = filedialog.asksaveasfilename(
+            title="Ekspor CSV", defaultextension=".csv",
+            initialdir=str(OUTPUT_DIR), initialfile=default_name,
+            filetypes=[("CSV", "*.csv"), ("All files", "*.*")])
+        if not path:
+            return
+        db = DetectionDatabase()
+        try:
+            rc = export_csv(db, session_id=session_id, table=table,
+                            output_path=path)
+        finally:
+            db.close()
+        if rc == 0:
+            self.db_status.config(text=f"Tersimpan: {path}")
+            messagebox.showinfo("Ekspor CSV", f"Berhasil disimpan ke:\n{path}")
+        else:
+            messagebox.showerror("Ekspor CSV",
+                                 f"Gagal mengekspor tabel '{table}'. "
+                                 "Lihat pesan di terminal.")
 
     # ------------------------------------------------------------------
     # Ponteks run: dibaca di MAIN THREAD sebelum worker dibuat
@@ -608,6 +898,9 @@ class VehicleDetectionGUI:
         if "done" in self._pending:
             self._update_results(self._pending.pop("done"))
             self._update_status("Selesai")
+            # Sesi baru pasti tercatat - muat ulang kalau tab Database aktif.
+            if self.notebook.select() == str(self.db_tab):
+                self._db_refresh()
         if "error" in self._pending:
             err = self._pending.pop("error")
             self._update_info(f"ERROR:\n{err}")

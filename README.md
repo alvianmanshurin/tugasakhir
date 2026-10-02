@@ -362,7 +362,7 @@ python src/realtime.py --source 0 --show
 # CCTV / RTSP
 python src/cctv_connect.py --url rtsp://user:pass@ip:554/stream
 
-# GUI
+# GUI (tab Deteksi + tab Database: lihat sesi, preview tabel, ekspor CSV)
 python src/gui_app.py
 python src/gui_app.py --list-sources     # daftar video yang tersedia
 ```
@@ -390,11 +390,23 @@ python src/comparison.py --per-class outputs/evaluation/evaluation_report.json
 ### 8. Database
 
 ```bash
-python src/query_db.py --action sessions
-python src/query_db.py --action detail --session 1
-python src/query_db.py --action detections --session 1 --limit 20
-python src/query_db.py --action export --session 1
+python main.py query-db --action sessions
+python main.py query-db --action detail --session 1
+python main.py query-db --action detections --session 1 --limit 20
+python main.py query-db --action export --session 1                  # JSON
+python main.py query-db --action export --session 1 --format csv     # CSV per sesi
+python main.py query-db --action export --format csv --table sessions
+python main.py query-db --action export --format csv --table frame_stats --session 1
+python main.py query-db --action export --format csv --class mobil --output hasil.csv
 ```
+
+- `--format json` (default): ringkasan statistik satu sesi (butuh `--session`).
+- `--format csv`: baris mentah tabel mana pun (`sessions`, `detections`,
+  `frame_stats`, `counting_summary`, `vehicle_accumulation`); difilter per
+  `--session` bila kolomnya ada, tanpa `--session` = seluruh tabel.
+  Encoding `utf-8-sig` (Excel Windows langsung benar), default output
+  `outputs/export_<tabel>[_sessionN].csv`, dan `--class` bisa menyaring
+  `detections` per kelas.
 
 Jumlah kendaraan selalu `COUNT(DISTINCT vehicle_id)`, bukan `COUNT(*)`.
 Tabel `detections` menyimpan satu baris per track per frame.
@@ -565,6 +577,11 @@ Penyebabnya sudah terukur, bukan dugaan:
   tidak lagi menumpuk di satu split (bus: 1 → 18 instans di val)
 - **Added:** `rmtree_force()` - `split --clean` tahan folder beratribut
   ReadOnly (sebelumnya WinError 5 di tengah split)
+- **Added:** `query-db --format csv` - ekspor tabel database (per sesi atau
+  seluruh tabel) ke CSV `utf-8-sig` siap Excel; `--table` memilih tabel,
+  `--class` menyaring per kelas
+- **Added:** tab **Database** di GUI - daftar sesi, preview isi tabel
+  (maks 500 baris), dan tombol Ekspor CSV lewat dialog simpan
 - **Fixed:** ekstrak ulang menumpuk frame lama bercampur frame baru
   (penomoran melanjutkan file yang ada) - folder output kini dibersihkan
 - **Fixed:** guard cek label di `workflow` memakai filter gambar, jadi `.txt`
