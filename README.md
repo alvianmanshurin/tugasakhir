@@ -83,7 +83,8 @@ tugasakhir/
 │   ├── realtime.py              # Real-time webcam/video
 │   ├── monitor.py               # Alias realtime.main
 │   ├── cctv_connect.py          # CCTV/RTSP + reconnect + simpan config
-│   ├── gui_app.py               # GUI Tkinter (thread-safe)
+│   ├── gui_app.py               # GUI Tkinter (thread-safe, 3 tab)
+│   ├── roi_picker.py            # Kalibrasi ROI interaktif (klik 4 titik)
 │   ├── dataset_prepare.py       # validate / split group-aware / labelme / yaml
 │   ├── dataset_collect.py       # Capture webcam, ekstrak frame video
 │   ├── extract_frames.py        # Ekstraksi frame + info video
@@ -98,6 +99,7 @@ tugasakhir/
 │       ├── counter.py           # Dual-line counting
 │       ├── roi_filter.py        # Filter + scaling ROI
 │       ├── tracker.py           # Object tracking (sumber track_id tunggal)
+│       ├── widgets.py           # RoundedButton (tombol sudut membulat)
 │       ├── visualizer.py
 │       └── metrics.py
 ├── runs/detect/models/vehicle_detection/
@@ -377,6 +379,18 @@ serta saran `line1_position`/`line2_position`. Perubahan lewat **Terapkan**
 berlaku pada run berikutnya; **Simpan ke config.yaml** juga menuliskannya
 ke disk.
 
+Tampilan GUI:
+
+- banner judul biru setinggi 32 px (Arial 11 bold)
+- urutan tab **Deteksi → ROI → Database**
+- tombol **DETECT** / **PAUSE-PLAY** / **STOP** / **DATABASE** / **CCTV**
+  memakai `RoundedButton` (sudut membulat, hover terang, tekan gelap,
+  abu saat dinonaktifkan); PAUSE dan STOP sengaja dipisah supaya sesi
+  bisa dijeda lalu dilanjutkan tanpa mengakhiri sesi
+- input webcam dilayani lewat `python src/realtime.py --source 0 --show`
+  (tombol WEBCAM dihapus dari GUI karena tool itu tidak menampilkan
+  hasil counting)
+
 ### 7. Evaluasi Model
 
 ```bash
@@ -485,6 +499,8 @@ Video/Webcam → Frame Extraction → Preprocessing → YOLOv11 Detection → RO
 | `line2_position` | 0.7139 | Garis 2 = area bawah ROI, batas aman counting |
 | `direction` | both | Hitung arah masuk & keluar |
 | `min_track_length` | 3 | Frame minimum sebelum dihitung |
+| warna garis 1 | merah `#ff0000` | Garis atas |
+| warna garis 2 | hijau `#00ff00` | Garis bawah |
 
 Arah `down` = masuk, `up` = keluar. ROI filter memakai boundary trapezoid
 dalam koordinat pixel `reference_resolution` (1920x1080) yang diskalakan ke
@@ -521,6 +537,19 @@ area frame, jadi kalibrasi terhadap rekaman gerbang masih wajib.
 | Recall | 0.4121 | 0.70 | belum tercapai |
 | F1 | 0.4850 | 0.70 | belum tercapai |
 | FPS | 32.9 | > 5 | tercapai |
+
+Benchmark kecepatan terukur (03 Okt 2026, i3-1115G4, CPU only):
+
+| Tahap | FPS | Waktu per frame |
+|-------|-----|-----------------|
+| Inferensi murni (`evaluate.py --task fps`) | 34.4 | 29.1 ms |
+| Pipeline penuh 600 frame KIRI-7 | 23.7 | 42.2 ms |
+| Webcam (`realtime.py`) | 5-8 | 125-200 ms |
+
+Pipeline penuh lebih lambat dari inferensi karena menambah tracking, filter
+ROI, penggambaran garis hitung, dan penulisan video. Selisih itu bukan
+kemacetan - tidak ada bagian pipeline yang perlu dioptimasi untuk target
+> 5 FPS.
 
 Per kelas:
 
@@ -573,6 +602,35 @@ Penyebabnya sudah terukur, bukan dugaan:
 ---
 
 ## Changelog
+
+### v1.5.0 - Kalibrasi ROI & Penyempurnaan GUI (03 Okt 2026)
+
+- **Added:** `src/roi_picker.py` - kalibrasi ROI interaktif: klik 4 titik
+  pada frame asli (1920x1080), `--apply` menulis `config.yaml` baris per
+  baris sehingga komentar tidak hilang; `pick_points()` dipakai ulang oleh
+  GUI
+- **Added:** tab **ROI** di GUI (urutan Deteksi → ROI → Database) - enable,
+  4 koordinat, tombol *Pilih dari frame / Muat / Terapkan / Simpan*,
+  pratinjau poligon di atas frame contoh, ringkasan cakupan & validitas
+  poligon, serta tombol **Pakai saran garis hitung**
+- **Added:** `src/utils/widgets.py` - `RoundedButton` (Canvas bersudut
+  membulat, hover/tekan/nonaktif, API serupa `tk.Button`); seluruh 14
+  tombol GUI memakainya
+- **Changed:** STOP dipecah jadi **PAUSE/PLAY** + **STOP** - sesi bisa
+  dijeda (frame beku) lalu dilanjutkan; tombol WEBCAM dihapus, DETECT
+  hijau, DATABASE biru
+- **Changed:** judul banner GUI dikecilkan (tinggi 60 → 32 px, Arial 16 → 11)
+- **Changed:** warna garis hitung - GARIS 1 merah, GARIS 2 hijau
+  (`pipeline.py`, `visualizer.py`)
+- **Changed:** ROI dikalibrasi dari rekaman gerbang: `[63,460] [372,440]`
+  `[122,1002] [1143,796]`, cakupan **13.8% → 16.7%**
+- **Changed:** garis hitung mengikuti geometri ROI baru - `line1_position`
+  0.48 → **0.6676** (tengah ROI), `line2_position` 0.75 → **0.7139**
+  (batas aman counting, semua lajur tetap terhitung); default disinkronkan
+  di `counter.py`, `pipeline.py`, `roi_filter.py`
+- **Benchmark:** inferensi murni **34.4 FPS** (29.1 ms/frame), pipeline
+  penuh **~24 FPS**, webcam **5-8 FPS**
+- **Docs:** README, WORKFLOW, FLOW_DIAGRAM menyesuaikan ROI & garis baru
 
 ### v1.4.0 - Dataset Regeneration & Leak-Free Split (02 Okt 2026)
 

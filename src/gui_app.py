@@ -54,6 +54,7 @@ from utils.paths import (
     get_model_path,
     load_config,
 )
+from utils.widgets import RoundedButton
 
 # Diisi CLI; None = pakai config/config.yaml
 _CONFIG_OVERRIDE: Optional[str] = None
@@ -125,15 +126,15 @@ class VehicleDetectionGUI:
     # ------------------------------------------------------------------
 
     def _create_widgets(self) -> None:
-        title_frame = tk.Frame(self.root, bg=self.accent_color, height=60)
+        title_frame = tk.Frame(self.root, bg=self.accent_color, height=32)
         title_frame.pack(fill=tk.X)
         title_frame.pack_propagate(False)
         tk.Label(title_frame, text="VEHICLE DETECTION SYSTEM",
-                 font=("Arial", 16, "bold"), bg=self.accent_color,
-                 fg="white").pack(pady=15)
+                 font=("Arial", 11, "bold"), bg=self.accent_color,
+                 fg="white").pack(pady=5)
 
         main_frame = tk.Frame(self.root, bg=self.bg_color)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(8, 10))
 
         left_panel = tk.Frame(main_frame, bg="#3c3c3c", width=320)
         left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
@@ -152,8 +153,9 @@ class VehicleDetectionGUI:
         tk.Entry(model_frame, textvariable=self.model_path).pack(side=tk.LEFT,
                                                                  fill=tk.X,
                                                                  expand=True)
-        tk.Button(model_frame, text="Browse",
-                  command=self._browse_model).pack(side=tk.LEFT, padx=5)
+        RoundedButton(model_frame, text="Browse", radius=8, height=26,
+                      font=("Arial", 9, "bold"), padding=10,
+                      command=self._browse_model).pack(side=tk.LEFT, padx=5)
 
         tk.Label(left_panel, text="Confidence (track baru):", bg="#3c3c3c",
                  fg=self.fg_color).pack(anchor=tk.W, padx=10)
@@ -178,8 +180,9 @@ class VehicleDetectionGUI:
         tk.Entry(source_frame, textvariable=self.source_path).pack(side=tk.LEFT,
                                                                    fill=tk.X,
                                                                    expand=True)
-        tk.Button(source_frame, text="Browse",
-                  command=self._browse_source).pack(side=tk.LEFT, padx=5)
+        RoundedButton(source_frame, text="Browse", radius=8, height=26,
+                      font=("Arial", 9, "bold"), padding=10,
+                      command=self._browse_source).pack(side=tk.LEFT, padx=5)
 
         tk.Checkbutton(left_panel, text="Simpan hasil ke database",
                        variable=self.save_to_db, bg="#3c3c3c", fg=self.fg_color,
@@ -198,35 +201,37 @@ class VehicleDetectionGUI:
         tk.Entry(rtsp_frame, textvariable=self.rtsp_url).pack(side=tk.LEFT,
                                                               fill=tk.X,
                                                               expand=True)
-        self.cctv_btn = tk.Button(left_panel, text="CCTV", command=self._run_cctv,
-                                  bg="#ff5722", fg="white",
-                                  font=("Arial", 10, "bold"))
+        self.cctv_btn = RoundedButton(
+            left_panel, text="CCTV", command=self._run_cctv,
+            bg="#ff5722", fg="white", font=("Arial", 10, "bold"),
+            radius=12, height=36)
         self.cctv_btn.pack(fill=tk.X, padx=10, pady=(0, 10))
 
         # --- Panel kiri: tombol aksi ------------------------------------
         btn_frame = tk.Frame(left_panel, bg="#3c3c3c")
         btn_frame.pack(fill=tk.X, padx=10, pady=10)
-        self.detect_btn = tk.Button(btn_frame, text="DETECT",
-                                    command=self._run_detection, bg=self.success_color,
-                                    fg="white", font=("Arial", 10, "bold"), height=2)
+        self.detect_btn = RoundedButton(
+            btn_frame, text="DETECT", command=self._run_detection,
+            bg=self.success_color, fg="white", font=("Arial", 10, "bold"),
+            radius=12, height=36)
         self.detect_btn.pack(fill=tk.X, pady=(0, 5))
         # PAUSE/PLAY dan STOP berdampingan supaya tinggi panel tidak bertambah.
         run_ctrl = tk.Frame(btn_frame, bg="#3c3c3c")
         run_ctrl.pack(fill=tk.X, pady=(0, 5))
-        self.pause_btn = tk.Button(run_ctrl, text="PAUSE",
-                                   command=self._toggle_pause, bg=self.warning_color,
-                                   fg="white", font=("Arial", 10, "bold"), height=2,
-                                   state=tk.DISABLED)
+        self.pause_btn = RoundedButton(
+            run_ctrl, text="PAUSE", command=self._toggle_pause,
+            bg=self.warning_color, fg="white", font=("Arial", 10, "bold"),
+            radius=12, height=36, state=tk.DISABLED)
         self.pause_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
-        self.stop_btn = tk.Button(run_ctrl, text="STOP",
-                                  command=self._stop_processing, bg="#f44336",
-                                  fg="white", font=("Arial", 10, "bold"), height=2,
-                                  state=tk.DISABLED)
+        self.stop_btn = RoundedButton(
+            run_ctrl, text="STOP", command=self._stop_processing,
+            bg="#f44336", fg="white", font=("Arial", 10, "bold"),
+            radius=12, height=36, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
-        self.database_btn = tk.Button(btn_frame, text="DATABASE",
-                                      command=self._open_db_tab,
-                                      bg=self.accent_color, fg="white",
-                                      font=("Arial", 10, "bold"), height=2)
+        self.database_btn = RoundedButton(
+            btn_frame, text="DATABASE", command=self._open_db_tab,
+            bg=self.accent_color, fg="white", font=("Arial", 10, "bold"),
+            radius=12, height=36)
         self.database_btn.pack(fill=tk.X, pady=(5, 0))
 
         # --- Panel kiri: info --------------------------------------------
@@ -358,11 +363,14 @@ class VehicleDetectionGUI:
 
         btns = tk.Frame(self.db_tab, bg="#3c3c3c")
         btns.pack(fill=tk.X, padx=8, pady=(0, 6))
-        tk.Button(btns, text="Muat Ulang", command=self._db_refresh
-                  ).pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(btns, text="Ekspor CSV", command=self._db_export_csv,
-                  bg=self.success_color, fg="white",
-                  font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        RoundedButton(btns, text="Muat Ulang", command=self._db_refresh,
+                      radius=8, height=26, font=("Arial", 9, "bold"),
+                      padding=10, bg="#4a4a4a", disabled_bg="#4a4a4a"
+                      ).pack(side=tk.LEFT, padx=(0, 6))
+        RoundedButton(btns, text="Ekspor CSV", command=self._db_export_csv,
+                      bg=self.success_color, fg="white",
+                      font=("Arial", 9, "bold"), radius=8, height=26,
+                      padding=10).pack(side=tk.LEFT)
         tk.Label(btns, text="Tabel:", bg="#3c3c3c",
                  fg=self.fg_color).pack(side=tk.LEFT, padx=(14, 4))
         self.db_table_var = tk.StringVar(value="detections")
@@ -489,16 +497,22 @@ class VehicleDetectionGUI:
         # --- Tombol --------------------------------------------------------
         btns = tk.Frame(self.roi_tab, bg="#3c3c3c")
         btns.pack(fill=tk.X, padx=10, pady=(4, 2))
-        tk.Button(btns, text="Pilih dari frame", command=self._roi_pick,
-                  font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(btns, text="Muat dari config", command=self._roi_load
-                  ).pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(btns, text="Terapkan", command=self._roi_apply,
-                  bg=self.success_color, fg="white",
-                  font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(btns, text="Simpan ke config.yaml", command=self._roi_save,
-                  bg=self.accent_color, fg="white",
-                  font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        RoundedButton(btns, text="Pilih dari frame", command=self._roi_pick,
+                      font=("Arial", 9, "bold"), radius=8, height=26,
+                      padding=10, bg="#4a4a4a", disabled_bg="#4a4a4a"
+                      ).pack(side=tk.LEFT, padx=(0, 6))
+        RoundedButton(btns, text="Muat dari config", command=self._roi_load,
+                      font=("Arial", 9, "bold"), radius=8, height=26,
+                      padding=10, bg="#4a4a4a", disabled_bg="#4a4a4a"
+                      ).pack(side=tk.LEFT, padx=(0, 6))
+        RoundedButton(btns, text="Terapkan", command=self._roi_apply,
+                      bg=self.success_color, fg="white",
+                      font=("Arial", 9, "bold"), radius=8, height=26,
+                      padding=10).pack(side=tk.LEFT, padx=(0, 6))
+        RoundedButton(btns, text="Simpan ke config.yaml", command=self._roi_save,
+                      bg=self.accent_color, fg="white",
+                      font=("Arial", 9, "bold"), radius=8, height=26,
+                      padding=10).pack(side=tk.LEFT)
 
         # --- Pratinjau + ringkasan ----------------------------------------
         prev_head = tk.Frame(self.roi_tab, bg="#3c3c3c")
@@ -519,10 +533,11 @@ class VehicleDetectionGUI:
                                 wrap=tk.WORD)
         self.roi_info.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
 
-        tk.Button(self.roi_tab, text="Pakai saran garis hitung",
-                  command=self._roi_use_suggested_lines,
-                  bg=self.warning_color, fg="white",
-                  font=("Arial", 9, "bold")).pack(fill=tk.X, padx=10, pady=(0, 10))
+        RoundedButton(self.roi_tab, text="Pakai saran garis hitung",
+                      command=self._roi_use_suggested_lines,
+                      bg=self.warning_color, fg="white",
+                      font=("Arial", 9, "bold"), radius=12, height=32
+                      ).pack(fill=tk.X, padx=10, pady=(0, 10))
 
         self._roi_refresh()
 
