@@ -603,7 +603,7 @@ tugasakhir/
     │  │  Training Time: ~30 menit                   │    │
     │  │  Inference FPS: 32.9 (deteksi saja)          │    │
     │  │  Pipeline FPS: 16-22 (ROI+tracking)         │    │
-    │  │  ROI: trapezoid 1920x1080 (~13.8% area)     │    │
+     │  │  ROI: trapezoid 1920x1080 (~16.7% area)     │    │
     │  │  Tracker: ByteTrack-inspired                │    │
     │  └─────────────────────────────────────────────┘    │
     └─────────────────────────────────────────────────────┘

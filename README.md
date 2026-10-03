@@ -362,10 +362,20 @@ python src/realtime.py --source 0 --show
 # CCTV / RTSP
 python src/cctv_connect.py --url rtsp://user:pass@ip:554/stream
 
-# GUI (tab Deteksi + tab Database: lihat sesi, preview tabel, ekspor CSV)
+# GUI (tab Deteksi + tab ROI + tab Database)
 python src/gui_app.py
 python src/gui_app.py --list-sources     # daftar video yang tersedia
+
+# Kalibrasi ROI: klik 4 titik pada frame asli, tulis ke config
+python src/roi_picker.py                # interaktif
+python src/roi_picker.py --apply        # langsung simpan ke config.yaml
 ```
+
+Tab **ROI** di GUI memuat hal yang sama tanpa keluar dari aplikasi:
+aktif/nonaktif, 4 koordinat sudut, tombol *Pilih dari frame*, pratinjau,
+serta saran `line1_position`/`line2_position`. Perubahan lewat **Terapkan**
+berlaku pada run berikutnya; **Simpan ke config.yaml** juga menuliskannya
+ke disk.
 
 ### 7. Evaluasi Model
 
@@ -462,23 +472,23 @@ Video/Webcam → Frame Extraction → Preprocessing → YOLOv11 Detection → RO
 ┌─────────────────────────────────┐
 │         Gerbang Masuk           │
 │    ┌───────────────────┐        │
-│    │    Line 1 (0.48)  │ ← Masuk│
+│    │    Line 1 (0.6676) │ ← Masuk│
 │    │                   │        │
-│    │    Line 2 (0.75)  │ ← Keluar│
+│    │    Line 2 (0.7139) │ ← Keluar│
 │    └───────────────────┘        │
 └─────────────────────────────────┘
 ```
 
 | Parameter | Nilai | Keterangan |
 |-----------|-------|------------|
-| `line1_position` | 0.48 | Garis atas (rasio tinggi frame) |
-| `line2_position` | 0.75 | Garis bawah (rasio tinggi frame) |
+| `line1_position` | 0.6676 | Garis 1 = tengah ROI (rasio tinggi frame) |
+| `line2_position` | 0.7139 | Garis 2 = area bawah ROI, batas aman counting |
 | `direction` | both | Hitung arah masuk & keluar |
 | `min_track_length` | 3 | Frame minimum sebelum dihitung |
 
 Arah `down` = masuk, `up` = keluar. ROI filter memakai boundary trapezoid
 dalam koordinat pixel `reference_resolution` (1920x1080) yang diskalakan ke
-resolusi video sebenarnya. Boundary sekarang hanya mencakup sekitar 13.8%
+resolusi video sebenarnya. Boundary sekarang hanya mencakup sekitar 16.7%
 area frame, jadi kalibrasi terhadap rekaman gerbang masih wajib.
 
 ---

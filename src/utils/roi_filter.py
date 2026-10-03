@@ -24,10 +24,10 @@ class ROIBoundary:
     Koordinat dalam ``reference_resolution``; ROIFilter yang
     menormalisasikannya ke ukuran frame.
     """
-    top_left: Tuple[int, int] = (60, 497)       # Kiri atas
-    top_right: Tuple[int, int] = (390, 484)     # Kanan atas
-    bottom_left: Tuple[int, int] = (111, 1007)  # Kiri bawah
-    bottom_right: Tuple[int, int] = (979, 822)  # Kanan bawah
+    top_left: Tuple[int, int] = (63, 460)        # Kiri atas
+    top_right: Tuple[int, int] = (372, 440)      # Kanan atas
+    bottom_left: Tuple[int, int] = (122, 1002)   # Kiri bawah
+    bottom_right: Tuple[int, int] = (1143, 796)  # Kanan bawah
     ref_width: int = DEFAULT_REFERENCE_W
     ref_height: int = DEFAULT_REFERENCE_H
 
@@ -50,10 +50,10 @@ class ROIBoundary:
         """Bangun boundary dari blok ``roi`` di config.yaml."""
         reference = reference or {}
         return cls(
-            top_left=tuple(boundary_cfg.get("top_left", (60, 497))),
-            top_right=tuple(boundary_cfg.get("top_right", (390, 484))),
-            bottom_left=tuple(boundary_cfg.get("bottom_left", (111, 1007))),
-            bottom_right=tuple(boundary_cfg.get("bottom_right", (979, 822))),
+            top_left=tuple(boundary_cfg.get("top_left", (63, 460))),
+            top_right=tuple(boundary_cfg.get("top_right", (372, 440))),
+            bottom_left=tuple(boundary_cfg.get("bottom_left", (122, 1002))),
+            bottom_right=tuple(boundary_cfg.get("bottom_right", (1143, 796))),
             ref_width=int(reference.get("width", DEFAULT_REFERENCE_W)),
             ref_height=int(reference.get("height", DEFAULT_REFERENCE_H)),
         )

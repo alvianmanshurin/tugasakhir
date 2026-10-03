@@ -352,19 +352,19 @@ roi:
     width: 1920
     height: 1080
   boundary:
-    top_left: [60, 497]
-    top_right: [390, 484]
-    bottom_left: [111, 1007]
-    bottom_right: [979, 822]
+    top_left: [63, 460]
+    top_right: [372, 440]
+    bottom_left: [122, 1002]
+    bottom_right: [1143, 796]
   min_bbox_height: 20
   draw_roi: true
 ```
 
 `reference_resolution` dipakai untuk menskalakan boundary ke resolusi video
-yang sebenarnya. Nilai ini hanya menyisakan sekitar 13.8% dari area frame
-1920x1080, jadi pada video operasional banyak kendaraan bisa terbuang.
-Kalibrasi boundary terhadap rekaman gerbang adalah pekerjaan yang belum
-selesai dan tidak bisa ditebak tanpa rekaman.
+yang sebenarnya. Boundary di atas diukur dengan `python src/roi_picker.py`
+(klik 4 titik pada frame asli) dan menyisakan sekitar 16.7% dari area frame
+1920x1080. Bila rekaman gerbang berubah, ulangi pengukuran dengan tool yang
+sama.
 
 ### 4.3 Tracking Configuration
 
@@ -482,8 +482,9 @@ tugasakhir/
    berubah.
 2. **Kelas `bus` = 0 AP50.** Menambah contoh anotasi bus memberi dampak
    paling besar dibanding tuning inference.
-3. **ROI boundary harus diukur dari rekaman gerbang**, bukan ditebak. Nilai
-   sekarang hanya mencakup ~13.8% area frame.
+3. **ROI boundary harus diukur ulang bila rekaman gerbang berganti.**
+   Sekarang sudah diukur dengan `python src/roi_picker.py` dan mencakup
+   ~16.7% area frame.
 4. **Jangan tambah track_id baru.** Semua modul memakai `utils/tracker.py`
    sebagai sumber tunggal; ID dari modul lain akan bentrok dengan
    `detections.vehicle_id` di database.

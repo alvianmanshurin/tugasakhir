@@ -147,15 +147,15 @@ class Visualizer:
 
         line1_y = int(h * line1_position)
         for x in range(0, w, 40):
-            cv2.line(frame, (x, line1_y), (min(x + 20, w), line1_y), (255, 100, 0), 2)
+            cv2.line(frame, (x, line1_y), (min(x + 20, w), line1_y), (0, 0, 255), 2)
         cv2.putText(frame, "GARIS 1", (10, line1_y - 10),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 0), 1)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
         line2_y = int(h * line2_position)
         for x in range(0, w, 40):
-            cv2.line(frame, (x, line2_y), (min(x + 20, w), line2_y), (0, 255, 255), 2)
+            cv2.line(frame, (x, line2_y), (min(x + 20, w), line2_y), (0, 255, 0), 2)
         cv2.putText(frame, "GARIS 2", (10, line2_y + 20),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         cv2.putText(frame, "ZONE COUNTING", (w//2 - 60, line1_y - 10),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)

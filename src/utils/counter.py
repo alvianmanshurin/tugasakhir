@@ -34,8 +34,8 @@ class VehicleCounter:
 
     def __init__(
         self,
-        line1_position: float = 0.48,
-        line2_position: float = 0.75,
+        line1_position: float = 0.6676,
+        line2_position: float = 0.7139,
         direction: str = "both",
         min_track_length: int = 3,
         min_displacement: float = 25.0,

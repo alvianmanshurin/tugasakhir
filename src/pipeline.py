@@ -112,8 +112,8 @@ class VehiclePipeline:
         # Counter
         count_cfg = self.config.get("counting", {})
         self.counter = VehicleCounter(
-            line1_position=float(count_cfg.get("line1_position", 0.48)),
-            line2_position=float(count_cfg.get("line2_position", 0.75)),
+            line1_position=float(count_cfg.get("line1_position", 0.6676)),
+            line2_position=float(count_cfg.get("line2_position", 0.7139)),
             direction=str(count_cfg.get("direction", "both")),
             min_track_length=int(count_cfg.get("min_track_length", 3)),
             min_displacement=float(count_cfg.get("min_displacement", 25.0)),
@@ -378,13 +378,13 @@ class VehiclePipeline:
         line1_y = int(h * self.counter.line1_position)
         line2_y = int(h * self.counter.line2_position)
 
-        cv2.line(canvas, (0, line1_y), (w, line1_y), (255, 100, 0), 2)
+        cv2.line(canvas, (0, line1_y), (w, line1_y), (0, 0, 255), 2)
         cv2.putText(canvas, "GARIS 1", (10, max(20, line1_y - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 0), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
 
-        cv2.line(canvas, (0, line2_y), (w, line2_y), (0, 255, 255), 2)
+        cv2.line(canvas, (0, line2_y), (w, line2_y), (0, 255, 0), 2)
         cv2.putText(canvas, "GARIS 2", (10, min(h - 10, line2_y + 20)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
 
     def _draw_hud(self, canvas, tracked: List[dict]) -> None:
         vis_cfg = self.config.get("visualization", {})

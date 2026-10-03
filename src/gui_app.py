@@ -26,23 +26,48 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 import cv2
+import numpy as np
+import yaml
 from PIL import Image, ImageTk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pipeline import VehiclePipeline
 from query_db import export_csv
+from roi_picker import (
+    CORNERS,
+    load_frame,
+    patch_config,
+    patch_counting_lines,
+    pick_points,
+    recommend_counting,
+)
 from utils.database import DetectionDatabase
-from utils.paths import DB_PATH, OUTPUT_DIR, get_model_path, load_config
+from utils.paths import (
+    CONFIG_PATH,
+    DB_PATH,
+    OUTPUT_DIR,
+    ROOT,
+    get_model_path,
+    load_config,
+)
 
 # Diisi CLI; None = pakai config/config.yaml
 _CONFIG_OVERRIDE: Optional[str] = None
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".m4v"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+# Label pendek untuk tab ROI (CORNERS di roi_picker memakai label panjang).
+ROI_LABELS: Dict[str, str] = {
+    "top_left": "Kiri Atas",
+    "top_right": "Kanan Atas",
+    "bottom_right": "Kanan Bawah",
+    "bottom_left": "Kiri Bawah",
+}
 
 
 class VehicleDetectionGUI:
@@ -74,6 +99,8 @@ class VehicleDetectionGUI:
         self.rtsp_url = tk.StringVar()
         self.save_to_db = tk.BooleanVar(value=False)
         self.is_processing = False
+        # Dibaca worker thread (bukan Tk var) - bool biasa aman karena GIL.
+        self.is_paused = False
 
         # --- State antar thread ------------------------------------------
         self._frame_queue: "queue.Queue" = queue.Queue(maxsize=2)
@@ -180,21 +207,25 @@ class VehicleDetectionGUI:
         btn_frame = tk.Frame(left_panel, bg="#3c3c3c")
         btn_frame.pack(fill=tk.X, padx=10, pady=10)
         self.detect_btn = tk.Button(btn_frame, text="DETECT",
-                                    command=self._run_detection, bg=self.accent_color,
+                                    command=self._run_detection, bg=self.success_color,
                                     fg="white", font=("Arial", 10, "bold"), height=2)
         self.detect_btn.pack(fill=tk.X, pady=(0, 5))
-        self.webcam_btn = tk.Button(btn_frame, text="WEBCAM",
-                                    command=self._run_webcam, bg=self.warning_color,
-                                    fg="white", font=("Arial", 10, "bold"), height=2)
-        self.webcam_btn.pack(fill=tk.X, pady=(0, 5))
-        self.stop_btn = tk.Button(btn_frame, text="STOP",
+        # PAUSE/PLAY dan STOP berdampingan supaya tinggi panel tidak bertambah.
+        run_ctrl = tk.Frame(btn_frame, bg="#3c3c3c")
+        run_ctrl.pack(fill=tk.X, pady=(0, 5))
+        self.pause_btn = tk.Button(run_ctrl, text="PAUSE",
+                                   command=self._toggle_pause, bg=self.warning_color,
+                                   fg="white", font=("Arial", 10, "bold"), height=2,
+                                   state=tk.DISABLED)
+        self.pause_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
+        self.stop_btn = tk.Button(run_ctrl, text="STOP",
                                   command=self._stop_processing, bg="#f44336",
                                   fg="white", font=("Arial", 10, "bold"), height=2,
                                   state=tk.DISABLED)
-        self.stop_btn.pack(fill=tk.X)
+        self.stop_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
         self.database_btn = tk.Button(btn_frame, text="DATABASE",
                                       command=self._open_db_tab,
-                                      bg=self.success_color, fg="white",
+                                      bg=self.accent_color, fg="white",
                                       font=("Arial", 10, "bold"), height=2)
         self.database_btn.pack(fill=tk.X, pady=(5, 0))
 
@@ -212,8 +243,10 @@ class VehicleDetectionGUI:
         self._setup_ttk_style()
 
         self.detect_tab = tk.Frame(self.notebook, bg="#3c3c3c")
+        self.roi_tab = tk.Frame(self.notebook, bg="#3c3c3c")
         self.db_tab = tk.Frame(self.notebook, bg="#3c3c3c")
         self.notebook.add(self.detect_tab, text="  Deteksi  ")
+        self.notebook.add(self.roi_tab, text="  ROI  ")
         self.notebook.add(self.db_tab, text="  Database  ")
 
         # --- Tab Deteksi: display + hasil hitungan ------------------------
@@ -232,8 +265,12 @@ class VehicleDetectionGUI:
                                                      font=("Consolas", 9))
         self.results_text.pack(fill=tk.X, padx=10, pady=(0, 10))
 
+        # --- Tab ROI -------------------------------------------------------
+        self._create_roi_tab()
+
         # --- Tab Database -------------------------------------------------
         self._create_db_tab()
+
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # --- Status bar ----------------------------------------------------
@@ -386,6 +423,317 @@ class VehicleDetectionGUI:
         prev_frame.columnconfigure(0, weight=1)
 
         self._db_refresh()
+
+    # ------------------------------------------------------------------
+    # Tab ROI (MAIN THREAD)
+    #
+    # Semua perubahan hanya masuk ke ``self.config`` dan dipakai oleh run
+    # BERIKUTNYA: VehiclePipeline membangun ROIFilter sekali di __init__,
+    # jadi menyentuh config di tengah run tidak mengubah pipeline yang
+    # sedang berjalan (dan tidak perlu sinkronisasi thread).
+    # ------------------------------------------------------------------
+
+    def _create_roi_tab(self) -> None:
+        roi_cfg = self.config.get("roi", {})
+        ref = roi_cfg.get("reference_resolution") or {}
+        self._roi_ref_w = int(ref.get("width", 1920))
+        self._roi_ref_h = int(ref.get("height", 1080))
+        self._roi_sample = None
+        self._roi_sample_path = None
+        self._roi_preview_img = None
+
+        head = tk.Frame(self.roi_tab, bg="#3c3c3c")
+        head.pack(fill=tk.X, padx=10, pady=(10, 4))
+        tk.Label(head, text="PENGATURAN ROI", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.accent_color).pack(side=tk.LEFT)
+        self.roi_enabled = tk.BooleanVar(value=bool(roi_cfg.get("enabled", True)))
+        tk.Checkbutton(head, text="Aktifkan ROI", variable=self.roi_enabled,
+                       command=self._roi_refresh, bg="#3c3c3c", fg=self.fg_color,
+                       selectcolor="#3c3c3c", activebackground="#3c3c3c",
+                       activeforeground=self.fg_color,
+                       font=("Arial", 9, "bold")).pack(side=tk.RIGHT)
+
+        tk.Label(self.roi_tab,
+                 text=(f"Koordinat memakai reference_resolution "
+                       f"{self._roi_ref_w}x{self._roi_ref_h}. Frame beresolusi "
+                       f"lain di-rescale otomatis. Perubahan berlaku pada "
+                       f"run berikutnya."),
+                 bg="#3c3c3c", fg="#9a9a9a", font=("Arial", 8),
+                 wraplength=760, justify=tk.LEFT).pack(anchor=tk.W, padx=10)
+
+        # --- Tabel 4 sudut ------------------------------------------------
+        form = tk.Frame(self.roi_tab, bg="#3c3c3c")
+        form.pack(fill=tk.X, padx=10, pady=(6, 4))
+        for col, text in enumerate(("Sudut", "X", "Y")):
+            tk.Label(form, text=text, bg="#3c3c3c", fg=self.accent_color,
+                     font=("Arial", 9, "bold"),
+                     width=16 if col == 0 else 8, anchor="w").grid(row=0, column=col,
+                                                                   sticky="w")
+
+        boundary = roi_cfg.get("boundary") or {}
+        self.roi_vars: Dict[str, Tuple[tk.StringVar, tk.StringVar]] = {}
+        for row, (key, _label) in enumerate(CORNERS, start=1):
+            x0, y0 = boundary.get(key, (0, 0))
+            x_var = tk.StringVar(value=str(x0))
+            y_var = tk.StringVar(value=str(y0))
+            self.roi_vars[key] = (x_var, y_var)
+            tk.Label(form, text=ROI_LABELS[key], bg="#3c3c3c", fg=self.fg_color,
+                     font=("Arial", 9), width=16, anchor="w").grid(
+                row=row, column=0, sticky="w", pady=1)
+            for col, var in ((1, x_var), (2, y_var)):
+                entry = tk.Entry(form, textvariable=var, width=8, justify=tk.CENTER,
+                                 font=("Consolas", 9))
+                entry.grid(row=row, column=col, padx=5, pady=1)
+                entry.bind("<KeyRelease>", lambda _e: self._roi_refresh())
+
+        # --- Tombol --------------------------------------------------------
+        btns = tk.Frame(self.roi_tab, bg="#3c3c3c")
+        btns.pack(fill=tk.X, padx=10, pady=(4, 2))
+        tk.Button(btns, text="Pilih dari frame", command=self._roi_pick,
+                  font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Button(btns, text="Muat dari config", command=self._roi_load
+                  ).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Button(btns, text="Terapkan", command=self._roi_apply,
+                  bg=self.success_color, fg="white",
+                  font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Button(btns, text="Simpan ke config.yaml", command=self._roi_save,
+                  bg=self.accent_color, fg="white",
+                  font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+
+        # --- Pratinjau + ringkasan ----------------------------------------
+        prev_head = tk.Frame(self.roi_tab, bg="#3c3c3c")
+        prev_head.pack(fill=tk.X, padx=10, pady=(8, 2))
+        tk.Label(prev_head, text="PRATINJAU", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.accent_color).pack(side=tk.LEFT)
+        self.roi_sample_label = tk.Label(prev_head, text="", bg="#3c3c3c",
+                                         fg="#9a9a9a", font=("Arial", 8))
+        self.roi_sample_label.pack(side=tk.RIGHT)
+
+        self.roi_preview = tk.Label(self.roi_tab, bg="#1e1e1e",
+                                    text="Memuat contoh frame...", fg="#666666",
+                                    font=("Arial", 10))
+        self.roi_preview.pack(fill=tk.X, padx=10, pady=(0, 6))
+
+        self.roi_info = tk.Text(self.roi_tab, height=7, bg="#2b2b2b",
+                                fg=self.fg_color, font=("Consolas", 9),
+                                wrap=tk.WORD)
+        self.roi_info.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
+
+        tk.Button(self.roi_tab, text="Pakai saran garis hitung",
+                  command=self._roi_use_suggested_lines,
+                  bg=self.warning_color, fg="white",
+                  font=("Arial", 9, "bold")).pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        self._roi_refresh()
+
+    # --- pembacaan / penulisan ---------------------------------------------
+
+    def _roi_read(self, silent: bool = False) -> Optional[Dict[str, Tuple[int, int]]]:
+        boundary: Dict[str, Tuple[int, int]] = {}
+        for key, _ in CORNERS:
+            x_var, y_var = self.roi_vars[key]
+            try:
+                x, y = int(x_var.get()), int(y_var.get())
+            except ValueError:
+                if not silent:
+                    messagebox.showerror(
+                        "ROI",
+                        f"Koordinat {ROI_LABELS[key]} harus bilangan bulat.\n"
+                        f"X = {x_var.get()!r}, Y = {y_var.get()!r}")
+                return None
+            boundary[key] = (x, y)
+        return boundary
+
+    def _roi_ensure_sample(self):
+        """Frame contoh untuk pratinjau & picking (dijumpai sekali)."""
+        if self._roi_sample is not None:
+            return self._roi_sample
+
+        candidates = []
+        src = self.source_path.get().strip()
+        if src and Path(src).suffix.lower() in IMAGE_EXTS:
+            candidates.append(src)
+        # Frame hasil ekstrak dataset - dekode instan, cukup untuk pratinjau
+        # karena koordinat ROI memakai ruang referensi, bukan ruang frame.
+        for rel in ("data/staging/images", "data/annotated/images/train",
+                    "data/annotated/images/val"):
+            folder = ROOT / rel
+            if folder.is_dir():
+                images = sorted(folder.glob("*.jpg"))
+                if images:
+                    candidates.append(str(images[0]))
+        if src:
+            candidates.append(src)
+        dataset_cfg = self.config.get("dataset", {})
+        if dataset_cfg.get("video_source") and dataset_cfg.get("video_files"):
+            candidates.append(str(Path(dataset_cfg["video_source"]) /
+                                  dataset_cfg["video_files"][0]))
+
+        for candidate in candidates:
+            path = Path(candidate)
+            if not path.is_file():
+                continue
+            try:
+                frame = load_frame(candidate, 0)
+            except Exception:  # noqa: BLE001 - kandidat berikutnya
+                continue
+            self._roi_sample = frame
+            self._roi_sample_path = str(path)
+            self.roi_sample_label.config(text=f"contoh: {path.name}")
+            return frame
+
+        self.roi_sample_label.config(text="contoh: tidak tersedia")
+        return None
+
+    # --- aksi tombol --------------------------------------------------------
+
+    def _roi_refresh(self) -> None:
+        """Pratinjau + ringkasan mengikuti isi entry (tanpa menyentuh config)."""
+        boundary = self._roi_read(silent=True)
+        if boundary is None:
+            return
+        self._roi_draw_preview(boundary)
+        self._roi_write_info(boundary)
+
+    def _roi_pick(self) -> None:
+        frame = self._roi_ensure_sample()
+        if frame is None:
+            messagebox.showerror("ROI", "Tidak ada contoh frame untuk dipakai.")
+            return
+        current = self._roi_read(silent=True)
+        points = pick_points(frame, [current[k] for k, _ in CORNERS] if current else None)
+        if not points:
+            return
+        for (key, _), (x, y) in zip(CORNERS, points):
+            self.roi_vars[key][0].set(str(x))
+            self.roi_vars[key][1].set(str(y))
+        self._roi_refresh()
+        self._update_status("ROI dipilih dari frame - klik Terapkan")
+
+    def _roi_apply(self) -> None:
+        boundary = self._roi_read()
+        if boundary is None:
+            return
+        roi_cfg = self.config.setdefault("roi", {})
+        roi_cfg["boundary"] = {k: list(boundary[k]) for k, _ in CORNERS}
+        roi_cfg["enabled"] = bool(self.roi_enabled.get())
+        roi_cfg.setdefault("reference_resolution",
+                           {"width": self._roi_ref_w, "height": self._roi_ref_h})
+        self._roi_draw_preview(boundary)
+        self._roi_write_info(boundary, note="Diterapkan - berlaku untuk run berikutnya.")
+        self._update_status("ROI diterapkan (berlaku run berikutnya)")
+
+    def _roi_load(self) -> None:
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("ROI", f"Gagal membaca config:\n{exc}")
+            return
+        roi_cfg = data.get("roi") or {}
+        for key, _ in CORNERS:
+            x0, y0 = (roi_cfg.get("boundary") or {}).get(key, (0, 0))
+            self.roi_vars[key][0].set(str(x0))
+            self.roi_vars[key][1].set(str(y0))
+        self.roi_enabled.set(bool(roi_cfg.get("enabled", True)))
+        self._roi_apply()
+        boundary = self._roi_read(silent=True)
+        if boundary is None:
+            return
+        self._roi_write_info(boundary, note=f"Dimuat dari {CONFIG_PATH.name}.")
+
+    def _roi_save(self) -> None:
+        boundary = self._roi_read()
+        if boundary is None:
+            return
+        self._roi_apply()
+        counting = self.config.get("counting", {})
+        try:
+            patch_config(CONFIG_PATH, boundary)
+            patch_counting_lines(CONFIG_PATH,
+                                 float(counting.get("line1_position", 0.6676)),
+                                 float(counting.get("line2_position", 0.7139)))
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("ROI", f"Gagal menulis config:\n{exc}")
+            return
+        self._roi_write_info(boundary,
+                             note=f"Tersimpan ke {CONFIG_PATH.name} "
+                                  f"(ROI + line1/line2).")
+        self._update_status("ROI disimpan ke config.yaml")
+
+    def _roi_use_suggested_lines(self) -> None:
+        boundary = self._roi_read()
+        if boundary is None:
+            return
+        line1, line2 = recommend_counting(
+            boundary, self._roi_ref_h,
+            float(self.config.get("counting", {}).get("min_displacement", 25.0)))
+        counting = self.config.setdefault("counting", {})
+        counting["line1_position"] = line1
+        counting["line2_position"] = line2
+        self._roi_write_info(boundary,
+                             note=f"Garis hitung disetel ke {line1} / {line2} "
+                                  f"(berlaku run berikutnya).")
+        self._update_status("Garis hitung mengikuti ROI")
+
+    # --- tampilan ------------------------------------------------------------
+
+    def _roi_draw_preview(self, boundary: Dict[str, Tuple[int, int]]) -> None:
+        frame = self._roi_ensure_sample()
+        if frame is None:
+            return
+
+        height, width = frame.shape[:2]
+        scale = min(1.0, 720 / width, 400 / height)
+        disp = cv2.resize(frame, None, fx=scale, fy=scale,
+                          interpolation=cv2.INTER_AREA)
+
+        if self.roi_enabled.get():
+            pts = np.array([(boundary[k][0] * scale, boundary[k][1] * scale)
+                            for k, _ in CORNERS], dtype=np.int32)
+            overlay = disp.copy()
+            cv2.fillPoly(overlay, [pts], (0, 255, 255))
+            cv2.addWeighted(overlay, 0.18, disp, 0.82, 0, disp)
+            cv2.polylines(disp, [pts], True, (0, 255, 0), 2, cv2.LINE_AA)
+            for key, _ in CORNERS:
+                cv2.circle(disp, (int(boundary[key][0] * scale),
+                                  int(boundary[key][1] * scale)),
+                           5, (0, 0, 255), -1, cv2.LINE_AA)
+        else:
+            cv2.putText(disp, "ROI NONAKTIF", (15, 35), cv2.FONT_HERSHEY_SIMPLEX,
+                        1.0, (0, 0, 255), 2, cv2.LINE_AA)
+
+        img = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)))
+        self._roi_preview_img = img  # referensi dicegah dari GC oleh Tk
+        self.roi_preview.config(image=img, text="")
+
+    def _roi_write_info(self, boundary: Dict[str, Tuple[int, int]],
+                        note: str = "") -> None:
+        poly = np.array([boundary[k] for k, _ in CORNERS], dtype=np.int32)
+        area = abs(float(cv2.contourArea(poly)))
+        convex = bool(cv2.isContourConvex(poly))
+        ref_area = float(self._roi_ref_w * self._roi_ref_h)
+
+        counting = self.config.get("counting", {})
+        line1, line2 = recommend_counting(
+            boundary, self._roi_ref_h,
+            float(counting.get("min_displacement", 25.0)))
+        cur1 = counting.get("line1_position")
+        cur2 = counting.get("line2_position")
+
+        lines = [
+            f"Cakupan    : {area / ref_area:.1%} ({area:.0f} px^2)",
+            f"Poligon    : {'cekung, OK' if convex else 'TIDAK cekung - periksa urutan sudut!'}",
+            f"Saran garis: line1_position={line1}  line2_position={line2}",
+            f"Terpasang  : line1={cur1}  line2={cur2}"
+            + ("" if (cur1 == line1 and cur2 == line2) else "   (berbeda dari saran)"),
+            f"ROI        : {'AKTIF' if self.roi_enabled.get() else 'NONAKTIF'}",
+        ]
+        if note:
+            lines.append(note)
+
+        self.roi_info.delete(1.0, tk.END)
+        self.roi_info.insert(tk.END, "\n".join(lines))
 
     # --- aksi tab database ------------------------------------------------
 
@@ -568,10 +916,30 @@ class VehicleDetectionGUI:
 
     def _set_running(self, running: bool) -> None:
         self.is_processing = running
+        if not running:
+            self.is_paused = False
         state = tk.DISABLED if running else tk.NORMAL
-        for btn in (self.detect_btn, self.webcam_btn, self.cctv_btn):
+        for btn in (self.detect_btn, self.cctv_btn):
             btn.config(state=state)
         self.stop_btn.config(state=tk.NORMAL if running else tk.DISABLED)
+        self._refresh_pause_btn()
+
+    def _toggle_pause(self) -> None:
+        """Jeda/lanjutkan worker tanpa mengakhiri sesi (berbeda dari STOP)."""
+        if not self.is_processing:
+            return
+        self.is_paused = not self.is_paused
+        self._refresh_pause_btn()
+        self._update_status("Dijeda - frame beku, klik PLAY untuk lanjut"
+                            if self.is_paused else "Memproses...")
+
+    def _refresh_pause_btn(self) -> None:
+        """Sinkronkan teks/warna/tombol PAUSE-PLAY dengan state."""
+        self.pause_btn.config(
+            text="PLAY" if self.is_paused else "PAUSE",
+            state=tk.NORMAL if self.is_processing else tk.DISABLED,
+            bg=self.success_color if self.is_paused else self.warning_color,
+        )
 
     def _spawn(self, target_name: str, **kwargs) -> None:
         self._set_running(True)
@@ -643,8 +1011,25 @@ class VehicleDetectionGUI:
             frame_no = 0
             wall_start = time.perf_counter()
             reconnect = kind == "cctv"
+            paused_total = 0.0
+            pause_started = None
 
             while self.is_processing:
+                if self.is_paused:
+                    # Selama jeda: video cukup sleep (posisi cap tidak maju);
+                    # sumber live di-grab saja supaya buffer tidak menumpuk
+                    # dan frame basi muncul saat PLAY ditekan.
+                    if pause_started is None:
+                        pause_started = time.perf_counter()
+                    if kind == "video":
+                        time.sleep(0.05)
+                    elif not cap.grab():
+                        time.sleep(0.05)
+                    continue
+                if pause_started is not None:
+                    paused_total += time.perf_counter() - pause_started
+                    pause_started = None
+
                 ok, frame = cap.read()
                 if not ok:
                     if reconnect and self.is_processing:
@@ -657,7 +1042,7 @@ class VehicleDetectionGUI:
 
                 frame_no += 1
                 annotated, tracked, info = pipeline.process_frame(
-                    frame, timestamp=time.perf_counter() - wall_start)
+                    frame, timestamp=time.perf_counter() - wall_start - paused_total)
 
                 if writer is not None:
                     writer.write(annotated)
@@ -778,6 +1163,8 @@ class VehicleDetectionGUI:
             totals: dict = {}
             total_rows = 0
             for i, path in enumerate(files, 1):
+                while self.is_paused and self.is_processing:
+                    time.sleep(0.05)
                 if not self.is_processing:
                     break
                 img = cv2.imread(str(path))
@@ -825,9 +1212,6 @@ class VehicleDetectionGUI:
         else:
             messagebox.showerror("Error", f"Format tidak didukung: {path.suffix}")
 
-    def _run_webcam(self) -> None:
-        self._spawn("_stream_worker", kind="webcam", source=0)
-
     def _run_cctv(self) -> None:
         url = self.rtsp_url.get().strip()
         if not url:
@@ -836,7 +1220,9 @@ class VehicleDetectionGUI:
         self._spawn("_stream_worker", kind="cctv", source=url)
 
     def _stop_processing(self) -> None:
+        self.is_paused = False
         self.is_processing = False
+        self._refresh_pause_btn()
         self._update_status("Menghentikan...")
 
     def _on_close(self) -> None:

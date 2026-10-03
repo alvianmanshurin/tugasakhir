@@ -171,10 +171,10 @@ roi:
     height: 1080
   # Format: [x, y] dalam koordinat reference_resolution
   boundary:
-    top_left: [60, 497]      # Kiri atas
-    top_right: [390, 484]    # Kanan atas
-    bottom_left: [111, 1007] # Kiri bawah
-    bottom_right: [979, 822] # Kanan bawah
+    top_left: [63, 460]      # Kiri atas
+    top_right: [372, 440]    # Kanan atas
+    bottom_left: [122, 1002] # Kiri bawah
+    bottom_right: [1143, 796] # Kanan bawah
   min_bbox_height: 20        # Ukuran bbox minimum (px pada resolusi frame)
   draw_roi: true             # Gambar area ROI di frame
 
@@ -190,8 +190,15 @@ tracking:
 
 # Counting Configuration (Dual-Line)
 counting:
-  line1_position: 0.48           # Garis 1 (atas) - dalam ROI area
-  line2_position: 0.75           # Garis 2 (bawah) - dalam ROI area
+  # Posisi sebagai rasio tinggi FRAME (bukan ROI): 0.0 = atas, 1.0 = bawah.
+  # ROI (ref 1920x1080) hasil src/roi_picker.py: bbox y 440..1002,
+  # tepi bawah miring kiri 1002 -> kanan 796.
+  #   line1 = 0.6676 -> y=721 = tengah ROI
+  #   line2 = 0.7139 -> y=771 = batas terendah yang masih bisa dilewati SEMUA lajur,
+  #           karena counter menuntut pusat bbox > line2_y + min_displacement(25)
+  #           sementara pusat bbox tidak boleh keluar poligon ROI.
+  line1_position: 0.6676         # Garis 1 - tengah ROI
+  line2_position: 0.7139         # Garis 2 - area bawah ROI (batas aman counting)
   direction: "both"              # "up", "down", atau "both"
   min_track_length: 3            # Frame minimum sebelum dihitung
   # Toleransi perpindahan (px pada resolusi reference) sebelum lintasan
