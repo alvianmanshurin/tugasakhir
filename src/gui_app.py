@@ -42,6 +42,7 @@ from roi_picker import (
     load_frame,
     patch_config,
     patch_counting_lines,
+    pick_lines,
     pick_points,
     recommend_counting,
 )
@@ -76,8 +77,10 @@ class VehicleDetectionGUI:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Vehicle Detection System - UPT K3L ITERA")
-        self.root.geometry("1180x760")
+        self.root.title("Vehicle Detection System - Tugas Akhir")
+        # Tinggi jendela dibatasi tinggi layar logis Tk (864 px di mesin ini),
+        # jadi 840 adalah nilai setinggi-tingginya yang benar-benar dipakai.
+        self.root.geometry("1180x840")
         self.root.configure(bg="#2b2b2b")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -514,6 +517,62 @@ class VehicleDetectionGUI:
                       font=("Arial", 9, "bold"), radius=8, height=26,
                       padding=10).pack(side=tk.LEFT)
 
+        # --- Garis hitung (virtual line) ------------------------------------
+        line_head = tk.Frame(self.roi_tab, bg="#3c3c3c")
+        line_head.pack(fill=tk.X, padx=10, pady=(8, 2))
+        tk.Label(line_head, text="GARIS HITUNG", font=("Arial", 10, "bold"),
+                 bg="#3c3c3c", fg=self.accent_color).pack(side=tk.LEFT)
+        tk.Label(line_head,
+                 text="rasio tinggi frame (0.0 - 1.0), dihitung dari atas",
+                 bg="#3c3c3c", fg="#9a9a9a", font=("Arial", 8)
+                 ).pack(side=tk.LEFT, padx=(8, 0))
+
+        count0 = self.config.get("counting", {}) or {}
+        self.line1_var = tk.StringVar(
+            value=str(count0.get("line1_position", 0.6676)))
+        self.line2_var = tk.StringVar(
+            value=str(count0.get("line2_position", 0.7139)))
+
+        line_form = tk.Frame(self.roi_tab, bg="#3c3c3c")
+        line_form.pack(fill=tk.X, padx=10, pady=(0, 2))
+        self.line_px_labels = []
+        for row, (var, color, label) in enumerate((
+                (self.line1_var, "#ff0000", "Garis 1 - MASUK"),
+                (self.line2_var, "#00ff00", "Garis 2 - KELUAR"))):
+            swatch = tk.Frame(line_form, bg=color, width=12, height=12)
+            swatch.grid_propagate(False)
+            swatch.grid(row=row, column=0, padx=(0, 6), pady=3, sticky="n")
+            tk.Label(line_form, text=label, bg="#3c3c3c", fg=self.fg_color,
+                     font=("Arial", 9), width=16, anchor="w").grid(
+                row=row, column=1, sticky="w")
+            entry = tk.Entry(line_form, textvariable=var, width=8,
+                             justify=tk.CENTER, font=("Consolas", 9))
+            entry.grid(row=row, column=2, padx=6, pady=3)
+            entry.bind("<KeyRelease>", lambda _e: self._roi_refresh())
+            px = tk.Label(line_form, text="", bg="#3c3c3c", fg="#9a9a9a",
+                          font=("Arial", 8), width=24, anchor="w")
+            px.grid(row=row, column=3, sticky="w", padx=(6, 0))
+            self.line_px_labels.append(px)
+
+        line_btns = tk.Frame(self.roi_tab, bg="#3c3c3c")
+        line_btns.pack(fill=tk.X, padx=10, pady=(2, 2))
+        RoundedButton(line_btns, text="Pilih garis",
+                      command=self._lines_pick, bg=self.accent_color,
+                      fg="white", font=("Arial", 9, "bold"), radius=8,
+                      height=26, padding=10).pack(side=tk.LEFT, padx=(0, 6))
+        RoundedButton(line_btns, text="Terapkan garis",
+                      command=self._lines_apply, bg=self.success_color,
+                      fg="white", font=("Arial", 9, "bold"), radius=8,
+                      height=26, padding=10).pack(side=tk.LEFT, padx=(0, 6))
+        RoundedButton(line_btns, text="Pakai saran",
+                      command=self._roi_use_suggested_lines,
+                      bg=self.warning_color, fg="white",
+                      font=("Arial", 9, "bold"), radius=8, height=26,
+                      padding=10).pack(side=tk.LEFT, padx=(0, 6))
+        RoundedButton(line_btns, text="Kembalikan", command=self._lines_reset,
+                      bg="#4a4a4a", fg="white", font=("Arial", 9, "bold"),
+                      radius=8, height=26, padding=10).pack(side=tk.LEFT)
+
         # --- Pratinjau + ringkasan ----------------------------------------
         prev_head = tk.Frame(self.roi_tab, bg="#3c3c3c")
         prev_head.pack(fill=tk.X, padx=10, pady=(8, 2))
@@ -531,13 +590,7 @@ class VehicleDetectionGUI:
         self.roi_info = tk.Text(self.roi_tab, height=7, bg="#2b2b2b",
                                 fg=self.fg_color, font=("Consolas", 9),
                                 wrap=tk.WORD)
-        self.roi_info.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
-
-        RoundedButton(self.roi_tab, text="Pakai saran garis hitung",
-                      command=self._roi_use_suggested_lines,
-                      bg=self.warning_color, fg="white",
-                      font=("Arial", 9, "bold"), radius=12, height=32
-                      ).pack(fill=tk.X, padx=10, pady=(0, 10))
+        self.roi_info.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
         self._roi_refresh()
 
@@ -558,6 +611,94 @@ class VehicleDetectionGUI:
                 return None
             boundary[key] = (x, y)
         return boundary
+
+    def _lines_read(self, silent: bool = False) -> Optional[Tuple[float, float]]:
+        """Baca ``line1_position``/``line2_position`` dari form.
+
+        Syaratnya sama persis dengan validasi di ``utils/counter.py``:
+        ``0.0 <= line1 < line2 <= 1.0``.
+        """
+        raw1 = self.line1_var.get().strip()
+        raw2 = self.line2_var.get().strip()
+        try:
+            line1, line2 = float(raw1), float(raw2)
+        except ValueError:
+            if not silent:
+                messagebox.showerror(
+                    "Garis Hitung",
+                    "line1_position / line2_position harus angka desimal.\n"
+                    f"Dapat: {raw1!r} / {raw2!r}")
+            return None
+        if not 0.0 <= line1 < line2 <= 1.0:
+            if not silent:
+                messagebox.showerror(
+                    "Garis Hitung",
+                    "Syarat: 0.0 <= line1_position < line2_position <= 1.0\n"
+                    f"Dapat: {line1} / {line2}")
+            return None
+        return line1, line2
+
+    def _lines_update_px(self) -> None:
+        """Tampilkan tinggi garis dalam pixel pada resolusi referensi."""
+        values = self._lines_read(silent=True)
+        for index, label in enumerate(self.line_px_labels):
+            if values is None:
+                label.config(text="-")
+            else:
+                label.config(text=f"= y {round(values[index] * self._roi_ref_h)} "
+                                  f"px @ {self._roi_ref_h}")
+
+    def _lines_apply(self) -> None:
+        values = self._lines_read()
+        if values is None:
+            return
+        counting = self.config.setdefault("counting", {})
+        counting["line1_position"], counting["line2_position"] = values
+        self._lines_update_px()
+        boundary = self._roi_read(silent=True)
+        if boundary is not None:
+            self._roi_draw_preview(boundary)
+            self._roi_write_info(
+                boundary, note="Garis hitung diterapkan "
+                               "(berlaku untuk run berikutnya).")
+        self._update_status(f"Garis hitung = {values[0]} / {values[1]} "
+                            "(berlaku run berikutnya)")
+
+    def _lines_reset(self) -> None:
+        """Kembalikan form ke nilai yang sedang terpasang di self.config."""
+        counting = self.config.get("counting", {}) or {}
+        self.line1_var.set(str(counting.get("line1_position", 0.6676)))
+        self.line2_var.set(str(counting.get("line2_position", 0.7139)))
+        self._roi_refresh()
+        self._update_status("Garis hitung dikembalikan ke nilai terpasang")
+
+    def _lines_pick(self) -> None:
+        """Tentukan posisi garis dengan klik di frame, seperti pilih ROI."""
+        frame = self._roi_ensure_sample()
+        if frame is None:
+            messagebox.showerror("Garis Hitung",
+                                 "Tidak ada contoh frame untuk dipakai.")
+            return
+        current = self._lines_read(silent=True) or (0.6676, 0.7139)
+        boundary = self._roi_read(silent=True)
+        polygon = [boundary[k] for k, _ in CORNERS] if boundary else None
+        values = pick_lines(frame, current, polygon)
+        if values is None:
+            return
+        line1, line2 = values
+        if line1 > line2:
+            line1, line2 = line2, line1
+        if not 0.0 <= line1 < line2 <= 1.0:
+            messagebox.showerror(
+                "Garis Hitung",
+                "Hasil klik tidak membentuk dua garis berbeda.\n"
+                f"Dapat: {line1} / {line2}")
+            return
+        self.line1_var.set(str(line1))
+        self.line2_var.set(str(line2))
+        self._roi_refresh()
+        self._update_status(f"Garis dipilih dari frame ({line1} / {line2}) "
+                            "- klik Terapkan garis")
 
     def _roi_ensure_sample(self):
         """Frame contoh untuk pratinjau & picking (dijumpai sekali)."""
@@ -604,6 +745,7 @@ class VehicleDetectionGUI:
 
     def _roi_refresh(self) -> None:
         """Pratinjau + ringkasan mengikuti isi entry (tanpa menyentuh config)."""
+        self._lines_update_px()
         boundary = self._roi_read(silent=True)
         if boundary is None:
             return
@@ -634,9 +776,17 @@ class VehicleDetectionGUI:
         roi_cfg["enabled"] = bool(self.roi_enabled.get())
         roi_cfg.setdefault("reference_resolution",
                            {"width": self._roi_ref_w, "height": self._roi_ref_h})
+        # Garis hitung ikut diserap supaya satu klik Terapkan mencakup
+        # seluruh form. Bila isian garis tidak valid, ROI tetap diterapkan
+        # dan selisihnya terlihat di ringkasan.
+        values = self._lines_read(silent=True)
+        if values is not None:
+            counting = self.config.setdefault("counting", {})
+            counting["line1_position"], counting["line2_position"] = values
+        self._lines_update_px()
         self._roi_draw_preview(boundary)
         self._roi_write_info(boundary, note="Diterapkan - berlaku untuk run berikutnya.")
-        self._update_status("ROI diterapkan (berlaku run berikutnya)")
+        self._update_status("ROI + garis hitung diterapkan (berlaku run berikutnya)")
 
     def _roi_load(self) -> None:
         try:
@@ -651,6 +801,9 @@ class VehicleDetectionGUI:
             self.roi_vars[key][0].set(str(x0))
             self.roi_vars[key][1].set(str(y0))
         self.roi_enabled.set(bool(roi_cfg.get("enabled", True)))
+        counting = data.get("counting") or {}
+        self.line1_var.set(str(counting.get("line1_position", 0.6676)))
+        self.line2_var.set(str(counting.get("line2_position", 0.7139)))
         self._roi_apply()
         boundary = self._roi_read(silent=True)
         if boundary is None:
@@ -686,6 +839,10 @@ class VehicleDetectionGUI:
         counting = self.config.setdefault("counting", {})
         counting["line1_position"] = line1
         counting["line2_position"] = line2
+        self.line1_var.set(str(line1))
+        self.line2_var.set(str(line2))
+        self._lines_update_px()
+        self._roi_draw_preview(boundary)
         self._roi_write_info(boundary,
                              note=f"Garis hitung disetel ke {line1} / {line2} "
                                   f"(berlaku run berikutnya).")
@@ -694,12 +851,23 @@ class VehicleDetectionGUI:
     # --- tampilan ------------------------------------------------------------
 
     def _roi_draw_preview(self, boundary: Dict[str, Tuple[int, int]]) -> None:
+        disp = self._roi_compose(boundary)
+        if disp is None:
+            return
+        img = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)))
+        self._roi_preview_img = img  # referensi dicegah dari GC oleh Tk
+        self.roi_preview.config(image=img, text="")
+
+    def _roi_compose(self, boundary: Dict[str, Tuple[int, int]]):
+        """Susun gambar pratinjau (frame + ROI + garis hitung) sebagai array BGR."""
         frame = self._roi_ensure_sample()
         if frame is None:
-            return
+            return None
 
         height, width = frame.shape[:2]
-        scale = min(1.0, 720 / width, 400 / height)
+        # Dibatasi tingginya supaya ringkasan di bawah pratinjau tetap
+        # terlihat pada tinggi jendela default (1180x840).
+        scale = min(1.0, 700 / width, 210 / height)
         disp = cv2.resize(frame, None, fx=scale, fy=scale,
                           interpolation=cv2.INTER_AREA)
 
@@ -718,9 +886,18 @@ class VehicleDetectionGUI:
             cv2.putText(disp, "ROI NONAKTIF", (15, 35), cv2.FONT_HERSHEY_SIMPLEX,
                         1.0, (0, 0, 255), 2, cv2.LINE_AA)
 
-        img = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)))
-        self._roi_preview_img = img  # referensi dicegah dari GC oleh Tk
-        self.roi_preview.config(image=img, text="")
+        # Garis hitung memakai rasio tinggi frame, jadi digambar melintang
+        # penuh pada tinggi pratinjau yang sama seperti aslinya.
+        values = self._lines_read(silent=True)
+        if values is not None:
+            ph, pw = disp.shape[:2]
+            for value, color, name in ((values[0], (0, 0, 255), "Garis 1"),
+                                       (values[1], (0, 255, 0), "Garis 2")):
+                y = max(1, min(ph - 2, int(round(value * ph))))
+                cv2.line(disp, (0, y), (pw - 1, y), color, 2, cv2.LINE_AA)
+                cv2.putText(disp, name, (10, y - 7), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55, color, 2, cv2.LINE_AA)
+        return disp
 
     def _roi_write_info(self, boundary: Dict[str, Tuple[int, int]],
                         note: str = "") -> None:
@@ -735,13 +912,18 @@ class VehicleDetectionGUI:
             float(counting.get("min_displacement", 25.0)))
         cur1 = counting.get("line1_position")
         cur2 = counting.get("line2_position")
+        form = self._lines_read(silent=True)
+        applied = form is not None and form[0] == cur1 and form[1] == cur2
 
         lines = [
             f"Cakupan    : {area / ref_area:.1%} ({area:.0f} px^2)",
             f"Poligon    : {'cekung, OK' if convex else 'TIDAK cekung - periksa urutan sudut!'}",
-            f"Saran garis: line1_position={line1}  line2_position={line2}",
+            f"Saran (ROI): line1_position={line1}  line2_position={line2}",
+            "Di form    : "
+            + (f"line1={form[0]}  line2={form[1]}"
+               if form else "TIDAK VALID (syarat 0 <= line1 < line2 <= 1)"),
             f"Terpasang  : line1={cur1}  line2={cur2}"
-            + ("" if (cur1 == line1 and cur2 == line2) else "   (berbeda dari saran)"),
+            + ("" if applied else "   (BEDA dari form - klik Terapkan)"),
             f"ROI        : {'AKTIF' if self.roi_enabled.get() else 'NONAKTIF'}",
         ]
         if note:

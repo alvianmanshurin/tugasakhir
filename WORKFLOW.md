@@ -8,19 +8,20 @@
 [OK] Pool merged + video_ranges        : dibangun & ditulis otomatis oleh tahap 'merge'
 [OK] Split regenerasi                  : 0.0% grup terbagi (train 2045 / val 480 / test 292)
 [OK] Auto-annotate YOLO11 COCO         : 4835 box di 2817 gambar (conf 0.35)
-[OK] Train YOLOv11n (50 epoch, CPU)   : runs/detect/models/vehicle_detection/weights/best.pt
-[OK] Evaluasi val (--task all)        : mAP50 38.5%, mAP50-95 29.9%, P 60.3%, R 41.2%
-[OK] Evaluasi test (--split test)     : TP 84, FP 11, FN 61, P 88.4%, R 57.9%
+[OK] Train YOLOv11n (20 epoch, CPU)   : runs/detect/models/vehicle_detection/weights/best.pt
+[OK] Evaluasi val (--split val)       : mAP50 69.7%, mAP50-95 45.3%, P 61.6%, R 76.3%, F1 66.6%
+[OK] Evaluasi test (--split test)     : mAP50 69.7%, mAP50-95 46.7%, P 65.6%, R 73.9%, F1 66.7%
+[OK] Confusion test @ conf 0.5        : TP 426, FP 50, FN 243, P 89.5%, R 63.7%
 [OK] ROI filter + boundary config     : trapezoid 1920x1080, min_bbox_height 20
 [OK] Object tracking (min_hits 3)     : sumber tunggal track_id
 [OK] Dual-line counter                : arah down (masuk) / up (keluar)
 [OK] Database SQLite (WAL, UNIQUE)    : sessions, detections, frame_stats, ringkasan
 [OK] Export ONNX & TorchScript        : artefak dipindah ke folder --output
-[OK] Pipeline end-to-end diuji        : video sintetis + 70 gambar test
+[OK] Pipeline end-to-end diuji        : video sintetis + 292 gambar test
 [OK] Regenerate split                 : grup utuh + stratified + test antar video (BAGIAN 0)
+[OK] Kalibrasi ROI dari rekaman gerbang: cakupan 13.8% -> 16.7%, garis 0.6676 / 0.7139
+[OK] Training ulang setelah perbaikan dataset (20 epoch, 03 Okt 2026)
 [ ] Anotasi bus tambahan              : 99 instans total, cuma 2.1% dari train (target 150-200)
-[ ] Kalibrasi ROI dengan video operasional nyata (butuh rekaman gerbang)
-[ ] Training ulang setelah perbaikan dataset (angka eval di atas = dataset LAMA)
 [ ] Verifikasi arah masuk/keluar di CCTV nyata (butuh video crossing)
 [ ] Deployment at gate ITERA
 ```
@@ -28,12 +29,14 @@
 > Catatan metrik: angka 72.6% di versi lama dokumen ini berasal dari
 > evaluation report yang tidak bisa direproduksi lagi (jalur `save_dir` dan
 > nama kurva tidak cocok dengan Ultralytics yang terpasang). Angka di atas
-> adalah hasil run `python src/evaluate.py --task all` yang benar dan
-> tersimpan di `outputs/evaluation/evaluation_report.json`.
+> adalah hasil run `python src/evaluate.py --task all --split <val|test>`
+> (03 Okt 2026), tersimpan di `outputs/evaluation/evaluation_report_val.json`
+> dan `evaluation_report_test.json`.
 >
-> **Angka train/eval di atas masih dari split & dataset LAMA (705 frame).**
-> Dataset sekarang 2817 frame dengan split bebas-leakage, jadi training dan
-> evaluasi harus diulang sebelum angkanya dipakai di laporan.
+> Metrik memakai `conf>=0.001` (`evaluation.map_conf`) sehingga mAP/P/R/F1
+> punya arti standar. Angka confusion matrix memakai ambang operasional
+> `conf>=0.5`. Angka sebelumnya (mAP50 38.5%) dihitung dengan `conf>=0.5`
+> sehingga **tidak sebanding** dengan angka sekarang.
 
 ---
 
@@ -260,37 +263,48 @@ runs/detect/models/vehicle_detection/
 ### 3.1 Jalankan Evaluasi
 
 ```bash
-python src/evaluate.py --task all
+python src/evaluate.py --task all --split val     # mAP + FPS + CM pada val
+python src/evaluate.py --task all --split test    # pengujian akhir
 ```
 
-### 3.2 Hasil Evaluasi (run terakhir)
+### 3.2 Hasil Evaluasi (run 03 Okt 2026)
 
-| Metric | Nilai | Catatan |
-|--------|-------|---------|
-| **mAP50** | 0.3850 | target skripsi 0.75, belum tercapai |
-| **mAP50-95** | 0.2993 | target 0.5, belum tercapai |
-| **Precision** | 0.6027 | |
-| **Recall** | 0.4121 | titik lemah utama |
-| **F1** | 0.4850 | |
-| **FPS** | 32.9 | 416x416, CPU, tanpa tracking |
+`conf>=0.001` (`evaluation.map_conf`), imgsz 416, CPU only:
 
-Confusion matrix (IoU>=0.5, conf>=0.5): TP 68, FP 17, FN 40
-(precision 0.80, recall 0.63 pada ambang itu).
+| Metric | val | test | Catatan |
+|--------|-----|------|---------|
+| **mAP50** | 0.6972 | 0.6965 | target skripsi 0.75, belum tercapai |
+| **mAP50-95** | 0.4530 | 0.4670 | target 0.5, belum tercapai |
+| **Precision** | 0.6162 | 0.6562 | target 0.70, belum |
+| **Recall** | 0.7631 | 0.7387 | target 0.70, **tercapai** |
+| **F1** | 0.6656 | 0.6668 | target 0.70, belum |
+| **FPS** | 28.2 | 28.4 | 416x416, CPU, tanpa tracking |
 
-### 3.3 Per Kelas
+Selisih val/test sangat kecil (mAP50 0.0007) - tidak ada tanda overfitting
+ke val set.
+
+Confusion matrix (IoU>=0.5, **conf>=0.5 = ambang operasional**):
+
+| Split | Gambar | TP | FP | FN | Precision | Recall | F1 |
+|-------|--------|----|----|----|-----------|--------|-----|
+| val | 480 | 562 | 68 | 306 | 0.8921 | 0.6475 | 0.7503 |
+| test | 292 | 426 | 50 | 243 | 0.8950 | 0.6368 | 0.7441 |
+
+### 3.3 Per Kelas (test set)
 
 | Kelas | AP50 | AP50-95 | Precision | Recall | F1 |
 |-------|------|---------|-----------|--------|-----|
-| mobil | 0.6922 | 0.5597 | 0.9184 | 0.7031 | 0.7965 |
-| motor | 0.4529 | 0.3054 | 0.6923 | 0.5455 | 0.6102 |
-| truk | 0.3950 | 0.3322 | 0.8000 | 0.4000 | 0.5333 |
-| bus | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| mobil | 0.8986 | 0.6369 | 0.8566 | 0.7532 | 0.8016 |
+| motor | 0.8495 | 0.4650 | 0.7950 | 0.7840 | 0.7895 |
+| truk | 0.6329 | 0.4593 | 0.6683 | 0.5992 | 0.6319 |
+| bus | 0.4050 | 0.3070 | 0.3047 | 0.8182 | 0.4441 |
 
-Kelas `bus` tidak menghasilkan satu pun true positive. Ini konsisten dengan
-hasil run penuh sebelumnya. Recall overall yang rendah lebih dipengaruhi
-kombinasi kelas langka dan jumlah contoh anotasi `bus` yang terlalu sedikit -
-bukan oleh bug di pipeline. Prioritas yang masuk akal: tambah contoh anotasi
-`bus`, lalu training ulang.
+Kelas `bus` tetap yang terlemah tetapi sudah tidak nol seperti evaluasi
+lama: Recall tinggi (0.82) dengan Precision rendah (0.30) berarti hampir
+semua bus ditemukan, namun objek lain masih sering dipanggil sebagai bus.
+Penyebab utama tetap jumlah data (99 instans, ~2% dari 2817 frame) - bukan
+bug di pipeline. Prioritas yang masuk akal: tambah contoh anotasi `bus`,
+lalu training ulang.
 
 ### 3.4 Output Files
 
@@ -298,15 +312,17 @@ Semua keluaran evaluasi dikumpulkan di `outputs/evaluation/`:
 
 ```
 outputs/evaluation/
-├── evaluation_report.json     ← metrik overall + per kelas + confusion matrix
-├── evaluation_metrics.csv
-├── evaluation_per_class.csv
-├── confusion_matrix.png
-├── confusion_matrix_normalized.png
-├── PR_curve.png              ← disalin dari BoxPR_curve.png
-├── F1_curve.png              ← disalin dari BoxF1_curve.png
-├── P_curve.png               ← disalin dari BoxP_curve.png
-└── R_curve.png               ← disalin dari BoxR_curve.png
+├── evaluation_report.json          ← run terakhir (file tanpa akhiran)
+├── evaluation_report_val.json      ← hasil --split val
+├── evaluation_report_test.json     ← hasil --split test
+├── evaluation_metrics.csv          ← + *_val.csv / *_test.csv
+├── evaluation_per_class.csv        ← + *_val.csv / *_test.csv
+├── confusion_matrix_val.png
+├── confusion_matrix_test.png
+├── PR_curve.png                    ← disalin dari BoxPR_curve.png
+├── F1_curve.png                    ← disalin dari BoxF1_curve.png
+├── P_curve.png                     ← disalin dari BoxP_curve.png
+└── R_curve.png                     ← disalin dari BoxR_curve.png
 ```
 
 Perbandingan antar model:

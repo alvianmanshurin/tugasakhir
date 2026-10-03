@@ -3,15 +3,17 @@
 # Studi Kasus: UPT K3L ITERA
 
 > **Catatan status diagram ini.** Alur di bawah masih menggambarkan kondisi
-> awal proyek. Angka metrik di dalamnya (mAP50 71.6%, 64.7%, dan seterusnya)
-> berasal dari evaluation report lama yang tidak bisa direproduksi ulang
-> karena `evaluate.py` saat itu salah membaca `save_dir` dan nama file kurva.
+> awal proyek. Angka metrik tertua di dalamnya (mAP50 71.6%, 64.7%, dst.)
+> berasal dari evaluation report yang tidak bisa direproduksi ulang karena
+> `evaluate.py` saat itu salah membaca `save_dir` dan nama file kurva.
 > **Jangan mengutip angka itu.**
 >
-> Untuk alur dan metrik yang benar, lihat `WORKFLOW.md`. Ringkasan terbaru:
-> split 564 train / 71 val / 70 test, dan hasil `python src/evaluate.py --task all`
-> adalah mAP50 0.3850, mAP50-95 0.2993, Precision 0.6027, Recall 0.4121,
-> F1 0.4850, FPS 32.9.
+> Untuk alur dan metrik yang benar, lihat `WORKFLOW.md`. Ringkasan terbaru
+> (03 Okt 2026): split 2045 train / 480 val / 292 test, dan hasil
+> `python src/evaluate.py --task all --split test` adalah mAP50 **0.6965**,
+> mAP50-95 **0.4670**, Precision 0.6562, Recall 0.7387, F1 0.6668
+> (`conf>=0.001`); pada ambang operasional `conf>=0.5` confusion matrix
+> test memberi P 0.8950 / R 0.6368.
 
 ---
 
@@ -21,7 +23,7 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        VEHICLE DETECTION SYSTEM                             │
 │                    UPT K3L ITERA - TUGAS AKHIR                              │
-│                    Status: [PIPELINE SELESAI, MODEL PERLU DIPERBAIKAN]     │
+│                  Status: [PIPELINE SELESAI, MODEL ULANG - TINGGAL BUS]      │
 └─────────────────────────────────────────────────────────────────────────────┘
 
     ┌──────────────┐
@@ -319,8 +321,9 @@
 
     ┌─────────────────────────────────────────────────────┐
     │  METRICS LAMA - TIDAK DAPAT DIREPRODUKSI           │
-    │  Lihat outputs/evaluation/evaluation_report.json    │
-    │  untuk angka yang benar.                            │
+    │  Angka benar: outputs/evaluation/                   │
+    │  evaluation_report_test.json (run 03 Okt 2026).     │
+    │  mAP50 0.6965, mAP50-95 0.4670, F1 0.6668.         │
     │  ┌─────────────────────────────────────────────┐    │
     │  │  mAP50:        71.6%  (best at epoch 39)    │    │
     │  │  mAP50-95:     54.1%                        │    │
@@ -335,65 +338,73 @@
 
 ---
 
-## 6. Evaluation Results (angka lama - ganti dengan report terbaru)
+## 6. Evaluation Results (run 03 Okt 2026)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│       EVALUATION RESULTS (ANGKA LAMA - SUDAH TIDAK VALID)                   │
-│       sumber: evaluation report lama, evaluate.py lama salah baca save_dir  │
+│  EVALUATION RESULTS - YOLO11n, 20 epoch, dataset 2817 frame                 │
+│  sumber: outputs/evaluation/evaluation_report_test.json                     │
+│  conf>=0.001 (mAP standar), imgsz 416, split test (292 gambar, 669 instans) │
 └─────────────────────────────────────────────────────────────────────────────┘
 
     ┌─────────────────────────────────────────────────────┐
-    │           CONFUSION MATRIX (Normalized)             │
+    │  OVERALL (test set, conf>=0.001)                    │
     │                                                     │
-    │              Predicted                              │
-    │           motor  mobil   bus   truk                 │
-    │  motor  [ 0.72   0.05   0.02  0.01 ]  ← 80% correct │
-    │  mobil  [ 0.04   0.88   0.01  0.02 ]  ← 88% correct │
-    │  bus    [ 0.05   0.03   0.50  0.08 ]  ← 50% correct │
-    │  truk   [ 0.03   0.06   0.04  0.42 ]  ← 42% correct │
+    │  mAP50        0.6965   target 0.75   belum          │
+    │  mAP50-95     0.4670   target 0.50   belum          │
+    │  Precision    0.6562   target 0.70   belum          │
+    │  Recall       0.7387   target 0.70   TERCAPAI       │
+    │  F1           0.6668   target 0.70   belum          │
+    │  FPS          28.4     target > 5    TERCAPAI       │
     │                                                     │
+    │  val (480 gambar): 0.6972 / 0.4530 / 0.6162 /       │
+    │                    0.7631 / 0.6656                  │
     └─────────────────────────────────────────────────────┘
 
     ┌─────────────────────────────────────────────────────┐
-    │           PER-CLASS METRICS                         │
+    │  CONFUSION MATRIX - conf>=0.5 (ambang operasional)  │
+    │  baris = label sebenarnya, kolom = prediksi         │
     │                                                     │
-    │  Class     mAP50    Recall    Precision    Support  │
-    │  ─────────────────────────────────────────────────  │
-    │  motor     77.0%    81.7%     63.8%        82       │
-    │  mobil     85.4%    93.6%     67.7%       141       │
-    │  bus       52.8%    66.7%     57.1%         6       │
-    │  truk      43.7%    62.5%     60.0%        24       │
-    │  ─────────────────────────────────────────────────  │
-    │  ALL       64.7%    76.1%     62.2%       253       │
+    │            motor  mobil   bus   truk  (bg)          │
+    │  motor   [ 0.61   0.00   0.00  0.00   0.39 ]        │
+    │  mobil   [ 0.00   0.68   0.00  0.00   0.32 ]        │
+    │  bus     [ 0.00   0.00   0.45  0.00   0.55 ]        │
+    │  truk    [ 0.00   0.00   0.00  0.43   0.57 ]        │
+    │  (bg)    [ 0.30   0.40   0.22  0.08  ----- ] ← FP   │
     │                                                     │
+    │  TP 426   FP 50   FN 243   P 0.8950   R 0.6368      │
+    │  Tidak ada salah kelas antar jenis kendaraan -      │
+    │  semua galat adalah objek terlewat (FN) dan objek    │
+    │  latar yang terpanggil kendaraan (FP).              │
     └─────────────────────────────────────────────────────┘
 
     ┌─────────────────────────────────────────────────────┐
-    │  PER-CLASS TERUKUR (evaluate.py --task all)         │
+    │  PER-CLASS (test, conf>=0.001)                      │
     │                                                     │
-    │  Class     AP50     AP50-95   Precision  Recall  F1  │
-    │  ─────────────────────────────────────────────────  │
-    │  mobil     0.6922   0.5597    0.9184     0.7031  0.7965│
-    │  motor     0.4529   0.3054    0.6923     0.5455  0.6102│
-    │  truk      0.3950   0.3322    0.8000     0.4000  0.5333│
-    │  bus       0.0000   0.0000    0.0000     0.0000  0.0000│
-    │  ─────────────────────────────────────────────────  │
-    │  ALL       0.3850   0.2993    0.6027     0.4121  0.4850│
+    │  Class    AP50    AP50-95  Precis.  Recall   F1     │
+    │  ────────────────────────────────────────────────   │
+    │  mobil    0.8986  0.6369   0.8566   0.7532  0.8016  │
+    │  motor    0.8495  0.4650   0.7950   0.7840  0.7895  │
+    │  truk     0.6329  0.4593   0.6683   0.5992  0.6319  │
+    │  bus      0.4050  0.3070   0.3047   0.8182  0.4441  │
+    │  ────────────────────────────────────────────────   │
+    │  ALL      0.6965  0.4670   0.6562   0.7387  0.6668  │
     │                                                     │
-    │  Catatan: bus 0.0 karena hanya 10 instance bus di   │
-    │  train (1.19%). Prioritas: tambah anotasi bus,     │
-    │  lalu split group-aware, lalu training ulang.       │
+    │  Catatan: bus tetap terlemah - recall 0.82 dengan   │
+    │  precision 0.30. Penyebab: hanya 99 instans bus     │
+    │  (~2% dari 2817 frame). Prioritas: tambah anotasi   │
+    │  bus, lalu training ulang.                          │
     └─────────────────────────────────────────────────────┘
 
     ┌─────────────────────────────────────────────────────┐
     │           SPEED BENCHMARK                           │
     │                                                     │
-    │  Preprocess:   0.5 ms                               │
-    │  Inference:   31.4 ms                               │
-    │  Postprocess:  0.4 ms                               │
+    │  End-to-end (50 gambar 1920x1080 -> 416):           │
+    │      35.2 ms/frame  ->  28.4 FPS                    │
+    │      (3 pengukuran pada hari yang sama: 28-33 FPS)  │
     │  ─────────────────────                              │
-    │  Total:       32.3 ms/frame  →  ~31 FPS             │
+    │  Loop val Ultralytics (per gambar):                 │
+    │      0.5 + 18.3 + 0.4 ms  ~  19 ms                  │
     │                                                     │
     │  Hardware: Intel i3-1115G4 @ 3.00GHz (CPU only)     │
     └─────────────────────────────────────────────────────┘
@@ -464,17 +475,17 @@ tugasakhir/
 │    ├── dataset.yaml             ← YOLO dataset config
 │    │
 │    ├── raw/                     ← Video frames
-│    │   ├── KIRI-7/              (174 frames)
-│    │   ├── KIRI-9/              (181 frames)
-│    │   ├── TENGAH-7/            (179 frames)
-│    │   ├── TENGAH-9/            (171 frames)
-│    │   └── merged/              (705 frames)
+│    │   ├── KIRI-7/              (695 frames)
+│    │   ├── KIRI-9/              (723 frames)
+│    │   ├── TENGAH-7/            (716 frames)
+│    │   ├── TENGAH-9/            (683 frames)
+│    │   └── merged/              (2817 frames)
 │    │
     │    └── annotated/               ← Labeled dataset
     │        ├── images/
-    │        │   ├── train/           (564 images)
-    │        │   ├── val/             (71 images)
-    │        │   └── test/            (70 images)
+    │        │   ├── train/           (2045 images)
+    │        │   ├── val/             (480 images)
+    │        │   └── test/            (292 images)
     │        └── labels/             (1:1 dengan images, label kosong = background)
 │
 ├─── src/
@@ -513,7 +524,14 @@ tugasakhir/
 ├─── outputs/
 │    ├── inference_val/           ← Inference results
 │    └── evaluation/
-│        └── evaluation_report.json
+│        ├── evaluation_report.json       ← run terakhir (= test)
+│        ├── evaluation_report_val.json
+│        ├── evaluation_report_test.json
+│        ├── evaluation_metrics.csv       (+ _val.csv / _test.csv)
+│        ├── evaluation_per_class.csv     (+ _val.csv / _test.csv)
+│        ├── confusion_matrix_val.png
+│        ├── confusion_matrix_test.png
+│        └── PR/F1/P/R_curve.png
 │
 ├── WORKFLOW.md                   ← UPDATED
 ├── FLOW_DIAGRAM.md              ← UPDATED (this file)
@@ -533,16 +551,16 @@ tugasakhir/
     Minggu 1: Dataset Preparation
     ═══════════════════════════════════════════════════════════
     [████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░]
-    - Extract frames dari video (705 frames)
-    - Split train/val/test (564/71/70, split lama acak per gambar)
-    - Auto-annotate dengan YOLOv11 COCO (1097 boxes)
+    - Extract frames dari video (2817 frames, interval 15)
+    - Split train/val/test (2045/480/292, group-aware, leakage 0.0%)
+    - Auto-annotate dengan YOLO11 COCO (4835 boxes)
     ✓ SELESAI
 
     Minggu 2: Training & Evaluation
     ═══════════════════════════════════════════════════════════
     [████████████████████████████████████████░░░░░░░░░░░░░░░░]
-    - Training YOLOv11n (50 epoch, ~30 menit, CPU)
-    - Evaluasi model (mAP50 terukur 38.5%, Precision 60.3%, Recall 41.2%)
+    - Training YOLOv11n (20 epoch, 4 jam 10 menit, CPU)
+    - Evaluasi model (mAP50 69.7% test, Precision 65.6%, Recall 73.9%)
     - Buat ROI filter (boundary trapezoid 1920x1080)
     - Buat object tracker (ByteTrack)
     ✓ SELESAI
@@ -557,11 +575,11 @@ tugasakhir/
 
     Minggu 4: Perbaikan Kualitas Model
     ═══════════════════════════════════════════════════════════
-    [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░████████]
-    - Tambah anotasi bus (sekarang hanya 10 instance di train)
-    - Regenerate split group-aware (blok 30 frame)
-    - Training ulang + evaluasi ulang
-    - Kalibrasi ROI dengan rekaman gerbang asli
+    [████████████████████████████████████████████████████░░░░]
+    - Regenerate split group-aware (blok 30 frame)          ✓ 02 Okt
+    - Kalibrasi ROI dengan rekaman gerbang asli             ✓ 03 Okt
+    - Training ulang 20 epoch + evaluasi dua split          ✓ 03 Okt
+    - Tambah anotasi bus (99 instance, target 150-200)      ⏳
 
     Minggu 5: Deployment
     ═══════════════════════════════════════════════════════════

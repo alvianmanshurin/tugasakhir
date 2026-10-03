@@ -103,9 +103,9 @@ class ModelEvaluator:
         self.output_dir = Path(self.eval_cfg.get("output_dir", "outputs/evaluation"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Split untuk confusion matrix. Default "val" menjaga perilaku lama;
-        # "test" dipakai untuk pengujian akhir karena test set tidak boleh
-        # dipakai untuk tuning apa pun.
+        # Split untuk mAP dan confusion matrix. Default "val" menjaga
+        # perilaku lama; "test" dipakai untuk pengujian akhir karena test
+        # set tidak boleh dipakai untuk tuning apa pun.
         self.split = (split or "val").lower()
         if self.split not in ("val", "test", "train"):
             raise ValueError(f"split tidak dikenal: {self.split} "
@@ -124,6 +124,14 @@ class ModelEvaluator:
         self.conf_threshold = float(self.model_cfg.get("confidence_threshold", 0.5))
         self.iou_threshold = float(self.model_cfg.get("iou_threshold", 0.45))
 
+        # Ambang bawah saat menghitung AP. Ultralytics memotong kurva PR
+        # pada nilai ini, jadi memakai ambang operasional (0.5) akan
+        # menghasilkan AP yang jauh lebih rendah dan TIDAK sebanding dengan
+        # mAP literatur / target skripsi. 0.001 adalah nilai bawaan
+        # Ultralytics. Precision/Recall pada ambang operasional dilaporkan
+        # terpisah lewat confusion matrix.
+        self.map_conf = float(self.eval_cfg.get("map_conf", 0.001))
+
         self._val_run_dir: Optional[Path] = None
 
     # ------------------------------------------------------------------
@@ -134,18 +142,26 @@ class ModelEvaluator:
         """
         Jalankan ``model.val()`` dan ekstrak metrik.
 
+        Metrik memakai ``conf=self.map_conf`` (default 0.001) supaya
+        Precision/Recall/F1 dan mAP punya arti standar. Split mengikuti
+        ``self.split``, jadi ``--split test`` benar-benar mengevaluasi test
+        set, bukan hanya confusion matrix.
+
         Returns:
             (metrics_overall, metrics_per_class, val_results, run_dir)
         """
         print("\n" + "=" * 60)
         print("EVALUASI MODEL - mAP, PRECISION, RECALL")
         print("=" * 60)
+        print(f"[INFO] Split: {self.split}  conf>={self.map_conf}  "
+              f"imgsz={self.imgsz}  NMS iou={self.iou_threshold}")
 
         results = self.model.val(
             data=self.dataset_cfg["yaml_path"],
+            split=self.split,
             imgsz=self.imgsz,
             device=self.device,
-            conf=self.conf_threshold,
+            conf=self.map_conf,
             iou=self.iou_threshold,
             plots=plots,
             verbose=False,
@@ -181,7 +197,7 @@ class ModelEvaluator:
             per_class.setdefault(name, {
                 "class_id": int(class_id), "AP50": 0.0, "AP50-95": 0.0,
                 "Precision": 0.0, "Recall": 0.0, "F1": 0.0,
-                "note": "tidak ada instance kelas ini di val set",
+                "note": f"tidak ada instance kelas ini di split {self.split}",
             })
 
         run_dir = self._find_val_run_dir(results)
@@ -435,16 +451,19 @@ class ModelEvaluator:
         n_fp = int(cm[self.nc, : self.nc].sum())
         n_fn = int(cm[: self.nc, self.nc].sum())
         n_ignored = int(cm[self.nc, self.nc])
+        p_cm = float(n_tp / max(n_tp + n_fp, 1))
+        r_cm = float(n_tp / max(n_tp + n_fn, 1))
+        f1_cm = float(2 * p_cm * r_cm / max(p_cm + r_cm, 1e-9))
         print(f"  TP={n_tp}  FP={n_fp}  FN={n_fn}  "
-              f"Precision={n_tp / max(n_tp + n_fp, 1):.4f}  "
-              f"Recall={n_tp / max(n_tp + n_fn, 1):.4f}")
+              f"Precision={p_cm:.4f}  Recall={r_cm:.4f}  F1={f1_cm:.4f}")
 
         summary = {
             "tp": n_tp,
             "fp": n_fp,
             "fn": n_fn,
-            "precision": float(n_tp / max(n_tp + n_fp, 1)),
-            "recall": float(n_tp / max(n_tp + n_fn, 1)),
+            "precision": p_cm,
+            "recall": r_cm,
+            "f1": f1_cm,
             "images": int(images_used),
             "ground_truth_boxes": int(cm[: self.nc, self.nc].sum() + n_tp),
             "ignored_class_predictions": n_ignored,
@@ -509,6 +528,8 @@ class ModelEvaluator:
             "model": str(self.model_path),
             "architecture": self.model_cfg.get("architecture"),
             "dataset": self.dataset_cfg["yaml_path"],
+            "map_split": self.split,
+            "map_conf": self.map_conf,
             "confusion_split": self.split,
             "imgsz": self.imgsz,
             "device": self.device,
@@ -520,19 +541,24 @@ class ModelEvaluator:
             "confusion_matrix": confusion,
             "curves": [p.name for p in curves],
         }
-        # mAP/Precision/Recall dari Ultralytics SELALU memakai split yang
-        # tertulis di dataset.yaml (val). Nombre confusion matrix boleh
-        # berbeda karena --split bisa menunjuk test. Catat eksplisit supaya
-        # tidak ada yang salah mengira angka-val dan angka-test berasal dari
-        # data yang sama.
+        # overall_metrics memakai conf=map_conf (0.001) sehingga mAP/P/R/F1
+        # punya arti standar; confusion_matrix memakai conf operasional
+        # (confidence_threshold) dan inilah yang menggambarkan perilaku
+        # sistem saat berjalan. Keduanya kini memakai split yang sama, jadi
+        # tidak ada lagi angka val yang terlanjur dikira angka test.
         report["note"] = (
-            "overall_metrics dan per_class_metrics dihitung pada split "
-            "yang tertulis di dataset.yaml (val). confusion_matrix dihitung "
-            f"pada split '{self.split}'."
+            f"overall_metrics dan per_class_metrics dihitung pada split "
+            f"'{self.split}' dengan conf>={self.map_conf} (mAP standar). "
+            f"confusion_matrix dihitung pada split '{self.split}' dengan "
+            f"conf>={self.conf_threshold} (ambang operasional)."
         )
         save_path = self.output_dir / "evaluation_report.json"
-        save_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),
-                             encoding="utf-8")
+        text = json.dumps(report, indent=2, ensure_ascii=False)
+        save_path.write_text(text, encoding="utf-8")
+        # Salinan ber-akhiran split: file tanpa akhiran selalu milik run
+        # terakhir, jadi hasil val dan test tetap bisa dibaca berdampingan.
+        (self.output_dir / f"evaluation_report_{self.split}.json").write_text(
+            text, encoding="utf-8")
         print(f"\n[INFO] Laporan: {save_path}")
 
         rows = [{"Metrik": k, "Nilai": v} for k, v in map_metrics.items()]
@@ -545,22 +571,29 @@ class ModelEvaluator:
         if confusion:
             # .get() bukan [""] supaya bagian laporan yang tidak punya
             # confusion matrix tetap bisa ditulis.
-            for label, key in (("TP", "tp"), ("FP", "fp"), ("FN", "fn"),
+            for label, key in (("TP (CM)", "tp"), ("FP (CM)", "fp"),
+                               ("FN (CM)", "fn"),
                                ("Precision (CM)", "precision"),
-                               ("Recall (CM)", "recall")):
+                               ("Recall (CM)", "recall"),
+                               ("F1 (CM)", "f1")):
                 if key in confusion:
                     value = confusion[key]
                     rows.append({
                         "Metrik": label,
                         "Nilai": round(value, 4) if isinstance(value, float) else value,
                     })
-        pd.DataFrame(rows).to_csv(self.output_dir / "evaluation_metrics.csv", index=False)
+        metrics_csv = self.output_dir / "evaluation_metrics.csv"
+        pd.DataFrame(rows).to_csv(metrics_csv, index=False)
 
+        per_class_csv = self.output_dir / "evaluation_per_class.csv"
         pd.DataFrame([
             {"Kelas": name, **{k: v for k, v in m.items() if k != "note"}}
             for name, m in per_class.items()
-        ]).to_csv(self.output_dir / "evaluation_per_class.csv", index=False)
-        print(f"[INFO] CSV  : {self.output_dir / 'evaluation_metrics.csv'}")
+        ]).to_csv(per_class_csv, index=False)
+
+        for src in (metrics_csv, per_class_csv):
+            shutil.copy2(src, src.with_name(f"{src.stem}_{self.split}{src.suffix}"))
+        print(f"[INFO] CSV  : {metrics_csv}")
         return save_path
 
     # ------------------------------------------------------------------
@@ -587,13 +620,17 @@ class ModelEvaluator:
                                             confusion, curves)
 
         print("\n" + "=" * 60)
-        print(f"RINGKASAN: mAP50={map_metrics['mAP50']:.4f}  "
+        print(f"RINGKASAN [{self.split}, conf>={self.map_conf}]: "
+              f"mAP50={map_metrics['mAP50']:.4f}  "
               f"mAP50-95={map_metrics['mAP50-95']:.4f}  "
               f"P={map_metrics['Precision']:.4f}  R={map_metrics['Recall']:.4f}  "
+              f"F1={map_metrics['F1']:.4f}  "
               f"FPS={fps_metrics.get('fps', 0.0):.1f}")
         if confusion:
-            print(f"           TP={confusion['tp']}  FP={confusion['fp']}  "
-                  f"FN={confusion['fn']}")
+            print(f"           di ambang conf>={confusion.get('conf_threshold')}: "
+                  f"TP={confusion['tp']}  FP={confusion['fp']}  "
+                  f"FN={confusion['fn']}  P={confusion['precision']:.4f}  "
+                  f"R={confusion['recall']:.4f}  F1={confusion['f1']:.4f}")
         print("=" * 60)
         return {
             "overall": map_metrics,
@@ -617,9 +654,9 @@ def main() -> int:
     parser.add_argument("--max-images", type=int, default=None,
                         help="batasi jumlah gambar (untuk uji cepat)")
     parser.add_argument("--split", default="val", choices=["train", "val", "test"],
-                        help="split yang dipakai untuk confusion matrix "
-                             "(default: val). Gunakan 'test' untuk "
-                             "pengujian akhir.")
+                        help="split yang dievaluasi - mAP/P/R/F1 sekaligus "
+                             "confusion matrix (default: val). Gunakan "
+                             "'test' untuk pengujian akhir.")
     args = parser.parse_args()
 
     config = load_config(Path(args.config) if args.config else None)

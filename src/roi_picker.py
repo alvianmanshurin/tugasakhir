@@ -22,6 +22,8 @@ Contoh:
     python src/roi_picker.py
     python src/roi_picker.py --source video.MOV --frame 5000
     python src/roi_picker.py --apply
+    python src/roi_picker.py --lines            # klik posisi garis hitung
+    python src/roi_picker.py --lines --apply
 """
 
 import argparse
@@ -190,6 +192,122 @@ def pick_points(frame, old_polygon: Optional[Sequence[Tuple[int, int]]] = None,
             cv2.destroyAllWindows()
 
 
+# --- pemilih garis hitung ------------------------------------------------
+LINE_LABELS = ("Garis 1 (MASUK)", "Garis 2 (KELUAR)")
+COLOR_LINE1 = (0, 0, 255)
+COLOR_LINE2 = (0, 255, 0)
+
+
+class LineState:
+    """Posisi kedua garis hitung dalam piksel frame + riwayat undo."""
+
+    def __init__(self, scale: float, height: int, ys: Sequence[float]):
+        self.scale = scale
+        self.height = height
+        self.ys = [float(y) for y in ys]
+        self.initial = list(self.ys)
+        self.history: List[List[float]] = []
+        self.active = 0
+
+    def click(self, x: int, y: int) -> None:
+        """Pindahkan garis yang paling dekat ke posisi klik."""
+        frame_y = y / self.scale
+        idx = min(range(len(self.ys)), key=lambda i: abs(self.ys[i] - frame_y))
+        self.history.append(list(self.ys))
+        self.ys[idx] = min(max(frame_y, 0.0), float(self.height - 1))
+        self.active = idx
+
+    def undo(self) -> None:
+        if self.history:
+            self.ys = self.history.pop()
+
+    def reset(self) -> None:
+        self.history.append(list(self.ys))
+        self.ys = list(self.initial)
+
+
+def make_line_canvas(frame, state: LineState,
+                     old_polygon: Optional[Sequence[Tuple[int, int]]] = None):
+    canvas = cv2.resize(frame, None, fx=state.scale, fy=state.scale,
+                        interpolation=cv2.INTER_AREA) \
+        if state.scale != 1.0 else frame.copy()
+    h, w = canvas.shape[:2]
+
+    if old_polygon and len(old_polygon) == 4:
+        pts = np.array([(x * state.scale, y * state.scale)
+                        for x, y in old_polygon], dtype=np.int32)
+        cv2.polylines(canvas, [pts], True, COLOR_OLD, 1, cv2.LINE_AA)
+
+    for i, y in enumerate(state.ys):
+        py = int(round(y * state.scale))
+        py = max(1, min(h - 2, py))
+        color = COLOR_LINE1 if i == 0 else COLOR_LINE2
+        active = i == state.active
+        cv2.line(canvas, (0, py), (w - 1, py), color, 3 if active else 2,
+                 cv2.LINE_AA)
+        text = f"{LINE_LABELS[i]}   {y / state.height:.4f}"
+        cv2.putText(canvas, text, (15, max(20, py - 9)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    color if active else COLOR_LABEL, 2, cv2.LINE_AA)
+
+    cv2.putText(canvas, f"Aktif: {LINE_LABELS[state.active]} - klik untuk memindahkan",
+                (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_NEXT, 2, cv2.LINE_AA)
+    cv2.putText(canvas, "klik=pindahkan garis terdekat  u=undo  r=reset  "
+                        "s=selesai  q=batal",
+                (15, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_LABEL, 1,
+                cv2.LINE_AA)
+    return canvas
+
+
+def on_line_mouse(event, x, y, flags, param) -> None:
+    state: LineState = param
+    if event == cv2.EVENT_LBUTTONDOWN:
+        state.click(int(x), int(y))
+
+
+def pick_lines(frame, ratios: Sequence[float],
+               old_polygon: Optional[Sequence[Tuple[int, int]]] = None,
+               window_name: str = "Pilih Garis Hitung (klik)") \
+        -> Optional[Tuple[float, float]]:
+    """
+    Loop interaktif untuk menentukan posisi dua garis hitung dengan klik.
+
+    Sama seperti :func:`pick_points` tapi hanya butuh klik: klik kiri akan
+    memindahkan garis yang paling dekat ke titik tersebut, sehingga
+    penentuan garis memakai cara yang sama dengan penentuan sudut ROI.
+
+    Modal: memblokir sampai ``s``/Enter (hasil) atau ``q``/ESC (batal).
+
+    Returns:
+        ``(line1_position, line2_position)`` sebagai rasio tinggi frame,
+        atau ``None`` bila dibatalkan.
+    """
+    height = frame.shape[0]
+    scale = compute_scale(frame.shape[1], height)
+    state = LineState(scale, height, [r * height for r in ratios])
+
+    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+    cv2.setMouseCallback(window_name, on_line_mouse, state)
+    try:
+        while True:
+            cv2.imshow(window_name, make_line_canvas(frame, state, old_polygon))
+            key = cv2.waitKey(30) & 0xFF
+
+            if key in (ord("q"), 27):
+                return None
+            if key == ord("u"):
+                state.undo()
+            elif key == ord("r"):
+                state.reset()
+            elif key in (ord("s"), 13):
+                return round(state.ys[0] / height, 4), round(state.ys[1] / height, 4)
+    finally:
+        try:
+            cv2.destroyWindow(window_name)
+        except cv2.error:
+            cv2.destroyAllWindows()
+
+
 def recommend_counting(boundary: Dict[str, Tuple[int, int]], ref_h: int,
                        min_displacement: float) -> Tuple[float, float]:
     """
@@ -296,6 +414,46 @@ def patch_counting_lines(path: Path, line1: float, line2: float) -> None:
     path.write_text("".join(lines), encoding="utf-8")
 
 
+def _run_lines(config, config_path: Path, frame, old_polygon,
+               frame_size: Tuple[int, int], ref_size: Tuple[int, int],
+               apply: bool) -> int:
+    """Mode ``--lines``: tentukan posisi garis hitung dengan klik."""
+    width, height = frame_size
+    ref_w, ref_h = ref_size
+    counting = config.get("counting", {}) or {}
+    ratios = (float(counting.get("line1_position", 0.6676)),
+              float(counting.get("line2_position", 0.7139)))
+
+    poly_frame = None
+    if old_polygon and len(old_polygon) == 4:
+        poly_frame = [(x * width / ref_w, y * height / ref_h)
+                      for x, y in old_polygon]
+
+    print(f"Ukuran frame : {width}x{height}  (reference {ref_w}x{ref_h})")
+    print(f"Garis saat ini: line1={ratios[0]}  line2={ratios[1]}")
+    print("klik = pindahkan garis terdekat, s = selesai, q = batal")
+
+    result = pick_lines(frame, ratios, poly_frame)
+    if result is None:
+        print("Batal.")
+        return 0
+
+    line1, line2 = result
+    print("\n=== HASIL GARIS HITUNG ===")
+    print(f"  line1_position: {line1}   (y = {round(line1 * height)} px)")
+    print(f"  line2_position: {line2}   (y = {round(line2 * height)} px)")
+    if not 0.0 <= line1 < line2 <= 1.0:
+        print("[ERROR] Tidak memenuhi 0 <= line1 < line2 <= 1 - hasil tidak ditulis.")
+        return 1
+
+    if apply:
+        patch_counting_lines(config_path, line1, line2)
+        print(f"[OK] {config_path} diperbarui.")
+    else:
+        print("\nJalankan ulang dengan --apply untuk menulis ke config.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Pilih 4 titik sudut ROI dengan klik")
     parser.add_argument("--source", default=None,
@@ -304,6 +462,9 @@ def main() -> int:
                         help="index frame yang dibuka (0 = frame tengah)")
     parser.add_argument("--apply", action="store_true",
                         help="tulis hasil ke config/config.yaml")
+    parser.add_argument("--lines", action="store_true",
+                        help="pilih posisi garis hitung (line1/line2) dengan klik, "
+                             "bukan sudut ROI")
     parser.add_argument("--config", default=None, help="path config.yaml alternatif")
     args = parser.parse_args()
 
@@ -335,6 +496,10 @@ def main() -> int:
     # hasil klik di-map dulu ke ruang referensi sebelum disimpan.
     map_x = ref_w / width
     map_y = ref_h / height
+
+    if args.lines:
+        return _run_lines(config, config_path, frame, old_polygon,
+                          (width, height), (ref_w, ref_h), args.apply)
 
     print(f"Sumber      : {source}")
     print(f"Ukuran frame: {width}x{height}  (reference {ref_w}x{ref_h}, scale tampil {scale:.3f})")

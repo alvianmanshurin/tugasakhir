@@ -209,6 +209,10 @@ counting:
 # Evaluation Configuration
 evaluation:
   output_dir: "outputs/evaluation"
+  # Ambang bawah saat menghitung AP. Jangan disamakan dengan
+  # model.confidence_threshold (0.5) - mAP harus dihitung dari hampir semua
+  # deteksi supaya sebanding dengan literatur dan target skripsi.
+  map_conf: 0.001
   metrics:
     - "precision"
     - "recall"

@@ -158,10 +158,10 @@ Label kosong itu disengaja: gambar tanpa kendaraan tetap perlu file `.txt`
 kosong, kalau tidak Ultralytics mengabaikannya dan background negatif hilang
 dari training.
 
-> Split yang sedang dipakai masih hasil split lama per-gambar acak, sehingga
-> beberapa frame berdekatan bisa berada di split berbeda. `dataset_prepare.py
-> --action split` sudah group-aware (blok 30 frame) dan perlu dijalankan ulang
-> sebelum training berikutnya.
+> Split sudah diperbarui (02 Okt 2026) menjadi group-aware per blok 30
+> frame dengan stratifikasi kelas: train 2045 / val 480 / test 292 dan
+> leakage antar split 0.0%. `dataset_prepare.py --action split-report`
+> bisa dipakai untuk memeriksanya ulang.
 
 ---
 
@@ -371,6 +371,10 @@ python src/gui_app.py --list-sources     # daftar video yang tersedia
 # Kalibrasi ROI: klik 4 titik pada frame asli, tulis ke config
 python src/roi_picker.py                # interaktif
 python src/roi_picker.py --apply        # langsung simpan ke config.yaml
+
+# Kalibrasi garis hitung: klik posisi kedua garis pada frame
+python src/roi_picker.py --lines
+python src/roi_picker.py --lines --apply
 ```
 
 Tab **ROI** di GUI memuat hal yang sama tanpa keluar dari aplikasi:
@@ -378,6 +382,31 @@ aktif/nonaktif, 4 koordinat sudut, tombol *Pilih dari frame*, pratinjau,
 serta saran `line1_position`/`line2_position`. Perubahan lewat **Terapkan**
 berlaku pada run berikutnya; **Simpan ke config.yaml** juga menuliskannya
 ke disk.
+
+Seksi **GARIS HITUNG** (masih di tab ROI) mengatur virtual line langsung
+dari GUI:
+
+| Kontrol | Fungsi |
+|---------|--------|
+| entry `Garis 1 - MASUK` / `Garis 2 - KELUAR` | rasio tinggi frame, 0.0 - 1.0 |
+| label px di kanan | posisi `y` pada `reference_resolution` (1080 px) |
+| **Pilih garis** | klik posisi garis di jendela OpenCV, sama seperti memilih sudut ROI |
+| **Terapkan garis** | tulis ke `self.config`, berlaku run berikutnya |
+| **Pakai saran** | ambil nilai dari geometri ROI (via `recommend_counting`) |
+| **Kembalikan** | batalkan isian, kembali ke nilai yang sedang terpasang |
+
+Validasi identik dengan `utils/counter.py`: `0.0 <= line1 < line2 <= 1.0`.
+Kedua garis ikut digambar di pratinjau (merah = garis 1, hijau = garis 2),
+jadi posisinya bisa dilihat sebelum run. Ringkasan di bawah membedakan
+tiga nilai: **Saran (ROI)**, **Di form**, dan **Terpasang** - bila form
+berbeda dari config muncul catatan `(BEDA dari form - klik Terapkan)`.
+
+**Pilih garis** menentukan posisi dengan klik, sama seperti memilih sudut
+ROI: jendela OpenCV menampilkan frame contoh + poligon ROI abu-abu, klik
+kiri memindahkan garis yang paling dekat ke titik itu (label dan rasio
+tertulis di sebelah garis). `u` undo, `r` reset, `s`/Enter selesai,
+`q`/ESC batal. Hasil yang terbalik otomatis ditukar, lalu hanya mengisi
+form - klik **Terapkan garis** untuk memakainya.
 
 Tampilan GUI:
 
@@ -387,6 +416,8 @@ Tampilan GUI:
   memakai `RoundedButton` (sudut membulat, hover terang, tekan gelap,
   abu saat dinonaktifkan); PAUSE dan STOP sengaja dipisah supaya sesi
   bisa dijeda lalu dilanjutkan tanpa mengakhiri sesi
+- jendela 1180x840 - tinggi maksimum yang benar-benar dipakai, karena
+  tinggi layar logis Tk di mesin ini 864 px
 - input webcam dilayani lewat `python src/realtime.py --source 0 --show`
   (tombol WEBCAM dihapus dari GUI karena tool itu tidak menampilkan
   hasil counting)
@@ -398,18 +429,22 @@ python src/evaluate.py --task all          # metrik + FPS + confusion matrix
 python src/evaluate.py --task fps
 python src/evaluate.py --task confusion --max-images 200
 
-# Confusion matrix pada split tertentu
-python src/evaluate.py --split test --task confusion
+# Pengujian akhir: mAP + confusion matrix pada test set
+python src/evaluate.py --task all --split test
 
 # Bandingkan antar model
 python src/comparison.py outputs/evaluation
 python src/comparison.py --per-class outputs/evaluation/evaluation_report.json
 ```
 
-> `--split` hanya mengubah confusion matrix. mAP/Precision/Recall dari
-> Ultralytics selalu mengikuti split yang tertulis di `data/dataset.yaml`
-> (val). Nama file hasil ikut split: `confusion_matrix_val.png` dan
-> `confusion_matrix_test.png`.
+> `--split` menentukan split untuk **mAP sekaligus confusion matrix**.
+> mAP dihitung dengan `evaluation.map_conf` (0.001) supaya punya arti
+> standar dan sebanding dengan literatur; Precision/Recall/F1 pada ambang
+> operasional `model.confidence_threshold` (0.5) dilaporkan terpisah sebagai
+> `* (CM)` di `evaluation_metrics.csv`. Tiap run juga menulis salinan
+> ber-akhiran split (`evaluation_report_test.json`,
+> `evaluation_metrics_val.csv`, dst.) supaya hasil val dan test bisa dibaca
+> berdampingan; file tanpa akhiran selalu milik run terakhir.
 
 ### 8. Database
 
@@ -507,6 +542,10 @@ dalam koordinat pixel `reference_resolution` (1920x1080) yang diskalakan ke
 resolusi video sebenarnya. Boundary sekarang hanya mencakup sekitar 16.7%
 area frame, jadi kalibrasi terhadap rekaman gerbang masih wajib.
 
+`line1_position`/`line2_position` bisa diubah lewat GUI (tab **ROI** →
+**GARIS HITUNG**) atau langsung di `config/config.yaml`; keduanya berlaku
+pada run berikutnya.
+
 ---
 
 ## Metrik Evaluasi
@@ -522,61 +561,87 @@ area frame, jadi kalibrasi terhadap rekaman gerbang masih wajib.
 
 ### Hasil Evaluasi Terukur
 
-> **Angka di bawah berasal dari model & split LAMA (705 frame, 02 Sep-01 Okt
-> 2026).** Dataset sekarang 2817 frame dengan split bebas-leakage, jadi
-> training + evaluasi harus diulang sebelum angka ini dipakai di laporan.
+> **Run 03 Okt 2026.** YOLO11n dilatih ulang 20 epoch pada dataset 2817
+> frame (split bebas-leakage 2045/480/292), lalu dievaluasi dua kali:
+> `--split val` dan `--split test`. Angka di bawah memakai `conf>=0.001`
+> (mAP standar). Hasil tersimpan di
+> `outputs/evaluation/evaluation_report_val.json` dan
+> `evaluation_report_test.json` - file tanpa akhiran selalu milik run
+> terakhir (test).
 
-`python src/evaluate.py --task all` (run terakhir, tersimpan di
-`outputs/evaluation/evaluation_report.json`):
+#### Pengujian akhir - test set (292 gambar, 669 instans)
+
+`python src/evaluate.py --task all --split test`:
 
 | Metrik | Nilai | Target | Status |
 |--------|-------|--------|--------|
-| mAP50 | 0.3850 | 0.75 | belum tercapai |
-| mAP50-95 | 0.2993 | 0.50 | belum tercapai |
-| Precision | 0.6027 | 0.70 | belum tercapai |
-| Recall | 0.4121 | 0.70 | belum tercapai |
-| F1 | 0.4850 | 0.70 | belum tercapai |
-| FPS | 32.9 | > 5 | tercapai |
+| mAP50 | 0.6965 | 0.75 | belum tercapai |
+| mAP50-95 | 0.4670 | 0.50 | belum tercapai |
+| Precision | 0.6562 | 0.70 | belum tercapai |
+| Recall | 0.7387 | 0.70 | tercapai |
+| F1 | 0.6668 | 0.70 | belum tercapai |
+| FPS | 28.4 | > 5 | tercapai |
+
+#### Validasi - val set (480 gambar, 868 instans)
+
+`python src/evaluate.py --task all --split val`:
+
+| Metrik | Nilai |
+|--------|-------|
+| mAP50 | 0.6972 |
+| mAP50-95 | 0.4530 |
+| Precision | 0.6162 |
+| Recall | 0.7631 |
+| F1 | 0.6656 |
+
+Val dan test nyaris identik (selisih mAP50 0.0007) - tidak ada tanda
+overfitting ke val set, dan angka test boleh dipakai sebagai angka laporan.
 
 Benchmark kecepatan terukur (03 Okt 2026, i3-1115G4, CPU only):
 
 | Tahap | FPS | Waktu per frame |
 |-------|-----|-----------------|
-| Inferensi murni (`evaluate.py --task fps`) | 34.4 | 29.1 ms |
+| Inferensi murni (`evaluate.py --task fps`) | 28.4 | 35.2 ms |
 | Pipeline penuh 600 frame KIRI-7 | 23.7 | 42.2 ms |
 | Webcam (`realtime.py`) | 5-8 | 125-200 ms |
 
-Pipeline penuh lebih lambat dari inferensi karena menambah tracking, filter
-ROI, penggambaran garis hitung, dan penulisan video. Selisih itu bukan
-kemacetan - tidak ada bagian pipeline yang perlu dioptimasi untuk target
-> 5 FPS.
+Tiga pengukuran `--task fps` pada hari yang sama memberi 28-33 FPS
+(30-35 ms); angka tabel adalah run terakhir. Pipeline penuh lebih lambat
+dari inferensi karena menambah tracking, filter ROI, penggambaran garis
+hitung, dan penulisan video. Selisih itu bukan kemacetan - tidak ada bagian
+pipeline yang perlu dioptimasi untuk target > 5 FPS.
 
-Per kelas:
+Per kelas (test, conf>=0.001):
 
 | Kelas | AP50 | AP50-95 | Precision | Recall | F1 |
 |-------|------|---------|-----------|--------|-----|
-| mobil | 0.6922 | 0.5597 | 0.9184 | 0.7031 | 0.7965 |
-| motor | 0.4529 | 0.3054 | 0.6923 | 0.5455 | 0.6102 |
-| truk | 0.3950 | 0.3322 | 0.8000 | 0.4000 | 0.5333 |
-| bus | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| mobil | 0.8986 | 0.6369 | 0.8566 | 0.7532 | 0.8016 |
+| motor | 0.8495 | 0.4650 | 0.7950 | 0.7840 | 0.7895 |
+| truk | 0.6329 | 0.4593 | 0.6683 | 0.5992 | 0.6319 |
+| bus | 0.4050 | 0.3070 | 0.3047 | 0.8182 | 0.4441 |
 
-Confusion matrix (IoU>=0.5, conf>=0.5) pada dua split:
+Confusion matrix (IoU>=0.5, **conf>=0.5 = ambang operasional**
+`model.confidence_threshold`):
 
-| Split | TP | FP | FN | Precision | Recall |
-|-------|----|----|----|-----------|--------|
-| val (71 gambar) | 68 | 17 | 40 | 0.8000 | 0.6296 |
-| test (70 gambar) | 84 | 11 | 61 | 0.8842 | 0.5793 |
+| Split | Gambar | TP | FP | FN | Precision | Recall | F1 |
+|-------|--------|----|----|----|-----------|--------|-----|
+| val | 480 | 562 | 68 | 306 | 0.8921 | 0.6475 | 0.7503 |
+| test | 292 | 426 | 50 | 243 | 0.8950 | 0.6368 | 0.7441 |
 
-Test set di atas baru diukur sekali pada 28 Sep 2026. Angka test **tidak
-boleh dipakai untuk tuning apa pun** - hanya untuk laporan akhir.
+P/Recall di atas berbeda dari tabel metrik karena dihitung pada titik
+kerja nyata (hanya deteksi dengan conf>=0.5 yang dihitung); itulah
+perilaku sistem saat berjalan. Angka test **tidak boleh dipakai untuk
+tuning apa pun** - hanya untuk laporan akhir.
 
-Kelas `bus` tidak menghasilkan satu pun true positive pada evaluasi lama.
-Penyebabnya sudah terukur, bukan dugaan:
+#### Kelas bus
 
-- hanya **99 instans bus** di seluruh 2817 frame (~2% instance)
-- split lama menyisakan **1 instans bus di val** dan 98.4% frame bocor antar
-  split - keduanya sudah diperbaiki (stratified split: bus 70 train / 18 val /
-  11 test, leakage 0.0%)
+Kelas `bus` tetap yang terlemah, tetapi sudah tidak nol seperti evaluasi
+lama:
+
+- hanya **99 instans bus** di seluruh 2817 frame (~2% instance), terbagi
+  70 train / 18 val / 11 test (stratified, leakage 0.0%)
+- di test set: AP50 0.4050 dan Recall 0.8182, tetapi Precision hanya
+  0.3047 - model masih sering memanggil objek lain sebagai bus
 - masalah yang tersisa adalah **jumlahnya**, bukan pembagiannya
 
 **Mengganti split saja tidak menyelesaikan kelas bus**; annotasi bus tambahan
@@ -603,6 +668,32 @@ Penyebabnya sudah terukur, bukan dugaan:
 
 ## Changelog
 
+### v1.6.0 - Retraining & Evaluasi Ulang (03 Okt 2026)
+
+- **Changed:** `evaluate.py` - mAP kini dihitung dengan `conf>=0.001`
+  (`evaluation.map_conf`) supaya mAP/Precision/Recall/F1 punya arti
+  standar; sebelumnya ikut `model.confidence_threshold` (0.5) sehingga
+  kurva PR terpotong di [0.5, 1.0] dan angkanya tidak sebanding dengan
+  literatur. Metrik pada ambang operasional tetap dilaporkan lewat
+  confusion matrix (`* (CM)` di `evaluation_metrics.csv`)
+- **Changed:** `--split` kini berlaku untuk mAP sekaligus confusion matrix
+  (sebelumnya hanya confusion matrix) - `--task all --split test`
+  benar-benar mengevaluasi test set
+- **Added:** salinan output ber-akhiran split (`evaluation_report_test.json`,
+  `evaluation_metrics_val.csv`, dst.) supaya hasil val dan test tidak saling
+  menimpa; kolom `f1` ditambahkan ke confusion matrix dan ke
+  `evaluation_metrics.csv`
+- **Training:** YOLO11n dilatih ulang **20 epoch** (4 jam 10 menit, batch 4,
+  imgsz 416, SGD, `close_mosaic` 10, `patience` 15 tidak pernah aktif) pada
+  dataset 2817 frame; bobot sebelumnya disimpan di
+  `runs/detect/models/vehicle_detection/backup-20261003-1859/`
+- **Result:** test set mAP50 **0.6965**, mAP50-95 **0.4670**, F1 0.6668,
+  Recall 0.7387 (target > 0.7 tercapai); val dan test selisih mAP50 hanya
+  0.0007; kelas `bus` tidak lagi 0 (AP50 0.4050). Angka lama 0.3850
+  dihasilkan oleh metodologi `conf>=0.5` lama dan **tidak sebanding**
+  langsung dengan angka ini
+- **Docs:** README/WORKFLOW/FLOW_DIAGRAM memakai angka evaluasi baru
+
 ### v1.5.0 - Kalibrasi ROI & Penyempurnaan GUI (03 Okt 2026)
 
 - **Added:** `src/roi_picker.py` - kalibrasi ROI interaktif: klik 4 titik
@@ -616,6 +707,18 @@ Penyebabnya sudah terukur, bukan dugaan:
 - **Added:** `src/utils/widgets.py` - `RoundedButton` (Canvas bersudut
   membulat, hover/tekan/nonaktif, API serupa `tk.Button`); seluruh 14
   tombol GUI memakainya
+- **Added:** kontrol **garis hitung** di tab ROI - entry `line1/line2`,
+  label posisi px, tombol *Terapkan garis / Pakai saran / Kembalikan*,
+  kedua garis digambar di pratinjau, ringkasan membedakan
+  *Saran (ROI)* / *Di form* / *Terpasang*; validasi sama dengan
+  `utils/counter.py` (`0 <= line1 < line2 <= 1`)
+- **Added:** `pick_lines()` di `src/roi_picker.py` - penentuan garis
+  hitung dengan klik pada frame, sama seperti pemilihan sudut ROI;
+  dipakai tombol **Pilih garis** di GUI dan CLI `roi_picker.py --lines`
+  (`--lines --apply` menulis config)
+- **Changed:** tinggi pratinjau ROI dibatasi 210 px dan jendela jadi
+  1180x840 supaya ringkasan di bawah pratinjau tetap terlihat (sebelumnya
+  panel ringkasan tertutup karena ROI tab meluap)
 - **Changed:** STOP dipecah jadi **PAUSE/PLAY** + **STOP** - sesi bisa
   dijeda (frame beku) lalu dilanjutkan; tombol WEBCAM dihapus, DETECT
   hijau, DATABASE biru
